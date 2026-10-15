@@ -1,0 +1,22 @@
+[project]
+name = "zw3d-mcp"
+version = "0.1.0"
+description = "MCP server that drives a running ZW3D 2025+ through the zw3dmcp plugin DLL"
+requires-python = ">=3.10"
+dependencies = ["mcp>=1.2"]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.scripts]
+zw3d-mcp = "zw3d_mcp.server:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["zw3d_mcp*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

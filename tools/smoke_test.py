@@ -1,0 +1,132 @@
+"""Manual smoke test against the REAL plugin. Run on the machine where ZW3D 2025+ is running with zw3dmcp.dll loaded.
+
+    python tools/smoke_test.py            # full modeling scenario (creates a new file "mcp_smoke")
+    python tools/smoke_test.py --cases    # also replay server/tests/protocol_cases.json
+    python tools/smoke_test.py --no-fillet  # skip risky steps
+
+Paste the complete output back to the developer: it records which API calls worked on your ZW3D build.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import pathlib
+import sys
+import time
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "server"))
+from zw3d_mcp.bridge import Bridge, ZW3DError  # noqa: E402
+
+failures = 0
+
+
+def step(b: Bridge, label: str, method: str, params: dict | None = None, expect_error: str | None = None):
+    global failures
+    t0 = time.perf_counter()
+    try:
+        r = b.call(method, params or {}, timeout_ms=120_000)
+        dt = (time.perf_counter() - t0) * 1000
+        print(f"[ OK ] {label:<34} {dt:7.0f} ms  {json.dumps(r, ensure_ascii=False)[:300]}")
+        return r
+    except ZW3DError as e:
+        good = expect_error is not None and e.code == expect_error
+        failures += 0 if good else 1
+        print(f"[{' OK ' if good else 'FAIL'}] {label:<34} {e}")
+        return None
+
+
+def approx(label: str, got, want, tol=1e-3):
+    global failures
+    ok = got is not None and abs(got - want) <= tol * max(abs(want), 1)
+    failures += 0 if ok else 1
+    print(f"[{' OK ' if ok else 'FAIL'}] check {label}: got {got}, expected {want:.4f}")
+
+
+def main() -> int:
+    global failures
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--cases", action="store_true")
+    ap.add_argument("--no-fillet", action="store_true")
+    ap.add_argument("--port", type=int, default=None)
+    a = ap.parse_args()
+    b = Bridge(port=a.port)
+
+    r = step(b, "ping", "ping")
+    if r is None:
+        return 1
+    print(f"       handlers run on ZW3D main thread: {r.get('main_thread')}  "
+          f"(handler={r.get('handler_thread_id')} init={r.get('init_thread_id')})")
+
+    step(b, "new_part (Chinese name)", "new_part", {"name": f"mcp_smoke_{int(time.time())}_底板"})
+    step(b, "ping after new_part", "ping")
+
+    plate = step(b, "create_box 100x60x20", "create_box", {"center": [50, 30, 10], "size": [100, 60, 20], "combine": "none"})
+    if plate:
+        approx("plate volume", plate["volume"], 120000)
+    cyl = step(b, "create_cylinder d30 h40", "create_cylinder",
+               {"base_center": [50, 30, 0], "radius": 15, "height": 40, "combine": "none"})
+    if cyl:
+        approx("cylinder volume", cyl["volume"], math.pi * 15 ** 2 * 40)
+    if plate and cyl:
+        u = step(b, "boolean add", "boolean", {"operation": "add", "base_id": plate["shape_id"],
+                                                 "tool_ids": [cyl["shape_id"]], "keep_tools": False})
+        if u and u.get("volume") is not None:
+            approx("union volume", u["volume"], 120000 + math.pi * 15 ** 2 * 20)
+
+    sq = [[200, 0, 0], [210, 0, 0], [210, 10, 0], [200, 10, 0]]
+    ex = step(b, "extrude_polygon 10x10x5", "extrude_polygon",
+              {"points": sq, "distance": 5, "start": 0, "direction": [0, 0, 1], "draft_angle": 0, "combine": "none"})
+    if ex:
+        approx("prism volume", ex["volume"], 500)
+    rv = step(b, "revolve_polygon (vendor example)", "revolve_polygon", {
+        "points": [[10, 0, 0], [20, 0, 0], [20, 10, 0], [10, 10, 0]],
+        "axis_point": [0, 0, 0], "axis_direction": [0, 1, 0], "angle": 180, "start_angle": 0, "combine": "none"})
+    if rv:
+        approx("half hollow cylinder", rv["volume"], math.pi * (400 - 100) * 10 / 2)
+
+    shapes = step(b, "list_shapes", "list_shapes")
+    if plate:
+        step(b, "get_mass_props", "get_mass_props", {"shape_id": plate["shape_id"]})
+        step(b, "get_bounding_box", "get_bounding_box", {"shape_id": plate["shape_id"]})
+        faces = step(b, "list_faces", "list_faces", {"shape_id": plate["shape_id"]})
+        edges = step(b, "list_edges", "list_edges", {"shape_id": plate["shape_id"]})
+        if edges and not a.no_fillet:
+            step(b, "fillet_edges r=1 (first edge)", "fillet_edges",
+                 {"shape_id": plate["shape_id"], "radius": 1, "edge_ids": edges["edge_ids"][:1]})
+
+    shot = step(b, "screenshot", "screenshot", {"width": 800, "height": 600, "zoom_all": True})
+    if shot:
+        p = pathlib.Path(shot["path"])
+        print(f"       png exists={p.exists()} size={p.stat().st_size if p.exists() else 0}")
+    step(b, "error path: bad shape id", "get_bounding_box", {"shape_id": 987654}, expect_error="INVALID_INPUT")
+    step(b, "error path: negative box", "create_box", {"center": [0, 0, 0], "size": [-1, 1, 1], "combine": "none"},
+         expect_error="INVALID_INPUT")
+    step(b, "run_command (expect DISABLED)", "run_command", {"command": "noop"}, expect_error="DISABLED")
+
+    out = pathlib.Path.home() / "mcp_smoke_output.step"
+    step(b, "export_step", "export_step", {"path": str(out)})
+    step(b, "save_part (Save As, Chinese path)", "save_part",
+         {"path": str(pathlib.Path.home() / "mcp_smoke_测试.Z3PRT")})
+
+    if a.cases:
+        cases = json.loads((ROOT / "server/tests/protocol_cases.json").read_text(encoding="utf-8"))
+        for c in cases:
+            for s in c["steps"]:
+                try:
+                    res = {"ok": True, "result": b.call(s["method"], s.get("params", {}))}
+                except ZW3DError as e:
+                    res = {"ok": False, "error": {"code": e.code}}
+                ok = ("expect_ok" not in s or res["ok"] == s["expect_ok"]) and \
+                     ("expect_error_code" not in s or res.get("error", {}).get("code") == s["expect_error_code"])
+                failures += 0 if ok else 1
+                print(f"[{' OK ' if ok else 'FAIL'}] case {c['name']}: {s['method']}")
+
+    print(f"\n{'ALL STEPS PASSED' if failures == 0 else str(failures) + ' FAILURE(S)'}")
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
