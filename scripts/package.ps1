@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS  Builds the release zip: dist\zw3d-mcp-v<version>-win64.zip
-           (plugin Release build + Python wheel + install scripts). Needs VS 2022, CMake, Python with `build` or setuptools.
+           (plugin Release build + Python wheel + install guide; users copy files by hand). Needs VS 2022, CMake, Python with `build` or setuptools.
 #>
 param([string]$Version = "0.1.0")
 $ErrorActionPreference = "Stop"
@@ -23,7 +23,7 @@ python -m pip wheel "$repo\server" --no-deps -w $stage
 if ($LASTEXITCODE -ne 0) { throw "wheel build failed" }
 
 # 3. scripts + docs
-Copy-Item "$repo\scripts\install.ps1", "$repo\scripts\uninstall.ps1", "$repo\README.md" $stage
+Copy-Item "$repo\README.md" $stage
 Copy-Item "$repo\docs\INSTALL.md" $stage
 Compress-Archive -Path "$stage\*" -DestinationPath "$dist\zw3d-mcp-v$Version-win64.zip"
 Get-FileHash "$dist\zw3d-mcp-v$Version-win64.zip" -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } | Set-Content "$dist\SHA256SUMS.txt"

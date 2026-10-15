@@ -5,27 +5,28 @@
 - Python 3.10+（用于 MCP 服务端），能在命令行运行 `python`。
 - 支持 MCP 的 AI 客户端：Claude Code / Claude Desktop / Cursor 等。
 
-## 一键安装（发布包）Release package
-1. 从 [Releases](../../releases) 下载 `zw3d-mcp-vX.Y.Z-win64.zip` 并解压。
-2. **关闭中望3D。**
-3. 在解压目录运行：
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File install.ps1
+## 手动安装 Manual install
+1. 从 [Releases](../../releases) 下载 `zw3d-mcp-vX.Y.Z-win64.zip` 并解压，得到 `zw3dmcp.dll` 和 `zw3d_mcp-*.whl`。
+2. **关闭中望3D**（已加载的 DLL 无法覆盖）。
+3. 把 `zw3dmcp.dll` 复制到：
    ```
-   它会把 `zw3dmcp.dll` 复制到 `%APPDATA%\ZWSOFT\ZW3D\ZW3D <年份>\custom\apilibs`，并用 pip 安装 Python 服务端。
-   常用参数：`-Year 2026` 指定版本，`-SkipPython` 只装插件，`-SkipPlugin` 只装 Python 包。
-4. 启动中望3D，输出窗口应显示 `[ZW3D-MCP] listening on 127.0.0.1:47823`。
-   若没有：在命令栏输入 `McpStart`；或用 ZW3D 的“应用程序管理器”手动加载该 DLL。
-5. 注册 MCP 服务端：
+   %APPDATA%\ZWSOFT\ZW3D\ZW3D 2025\custom\apilibs
+   ```
+   （在资源管理器地址栏直接粘贴上面的路径即可；2026 等新版本把年份换掉；没有 `apilibs` 文件夹就新建。）
+   其他加载方式（应用程序管理器手动加载、装进安装目录的 `apilibs`）见 `docs/api_notes.md`。
+4. 安装 Python 服务端：
+   ```
+   pip install zw3d_mcp-0.1.0-py3-none-any.whl
+   ```
+5. 启动中望3D，输出窗口应显示 `[ZW3D-MCP] listening on 127.0.0.1:47823`。
+   若没有：在命令栏输入 `McpStart`，或用应用程序管理器手动加载该 DLL。
+6. 注册 MCP 服务端：
    - Claude Code：`claude mcp add zw3d -- python -m zw3d_mcp`
    - Claude Desktop / Cursor：command=`python`，args=`["-m","zw3d_mcp"]`
-6. 验证：对 AI 说“ping 一下中望3D”，或在源码仓库里运行 `python tools/smoke_test.py`。
+7. 验证：对 AI 说“ping 一下中望3D”，或在源码仓库里运行 `python tools/smoke_test.py`。
 
 ## 卸载 Uninstall
-```powershell
-powershell -ExecutionPolicy Bypass -File uninstall.ps1
-```
-（关闭中望3D后运行）
+关闭中望3D，删除 `apilibs` 里的 `zw3dmcp.dll`，再运行 `pip uninstall zw3d-mcp`。
 
 ## 环境变量（在启动中望3D之前设置）
 | 变量 | 作用 |
@@ -39,7 +40,7 @@ powershell -ExecutionPolicy Bypass -File uninstall.ps1
 
 ## 常见问题 Troubleshooting
 - **ping 报 NOT_CONNECTED**：中望3D 没启动 / 插件没加载 / 端口被占用（换 `ZW3D_MCP_PORT`）。
-- **安装脚本说 ZW3D 正在运行**：已加载的 DLL 无法覆盖，先完全退出中望3D。
+- **复制 DLL 时提示文件被占用**：中望3D 还开着，先完全退出。
 - **插件加载失败**：确认安装了 x64 的 Visual C++ 2015-2022 运行库（中望3D 通常已带）。
 - **请求超时**：中望3D 正在执行命令或弹出对话框，按 Esc / 关闭对话框后重试。
 - 自行编译：见 `README.md` 第 1 节。
