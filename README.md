@@ -17,7 +17,7 @@ cmake --build build --config Release
 
 The SDK is found automatically (`C:\Program Files\ZWSOFT\ZW3D <year>`, newest ≥ 2025). Other location:
 `-DZW3D_SDK_DIR="D:\ZW3D 2026"`. Add `-DZW3D_MCP_INSTALL_USER=ON -DZW3D_MCP_YEAR=2025` to copy the DLL into
-`%APPDATA%\ZWSOFT\ZW3D\ZW 3D 2025\custom\apilibs` after the build (ZW3D loads it at start-up; **close ZW3D before rebuilding**,
+`%APPDATA%\ZWSOFT\ZW3D\ZW3D 2025\custom\apilibs` after the build (ZW3D loads it at start-up; **close ZW3D before rebuilding**,
 a loaded DLL cannot be overwritten). Other ways to load it: see `docs/api_notes.md`.
 
 On start-up the plugin prints `[ZW3D-MCP] listening on 127.0.0.1:47823`. Commands `McpStart` / `McpStop` toggle the service.

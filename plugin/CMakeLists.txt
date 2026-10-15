@@ -52,12 +52,12 @@ if(MSVC)
 endif()
 
 # Optional: copy into the per-user plugin folder ZW3D scans at start-up (see docs/api_notes.md).
-option(ZW3D_MCP_INSTALL_USER "Copy zw3dmcp.dll to %APPDATA%/ZWSOFT/ZW3D/ZW 3D <year>/custom/apilibs after build" OFF)
+option(ZW3D_MCP_INSTALL_USER "Copy zw3dmcp.dll to %APPDATA%/ZWSOFT/ZW3D/ZW3D <year>/custom/apilibs after build" OFF)
 set(ZW3D_MCP_YEAR "2025" CACHE STRING "ZW3D release year for the user apilibs folder")
 if(ZW3D_MCP_INSTALL_USER)
   add_custom_command(TARGET zw3dmcp POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$ENV{APPDATA}/ZWSOFT/ZW3D/ZW 3D ${ZW3D_MCP_YEAR}/custom/apilibs"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$ENV{APPDATA}/ZWSOFT/ZW3D/ZW3D ${ZW3D_MCP_YEAR}/custom/apilibs"
     COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:zw3dmcp>"
-            "$ENV{APPDATA}/ZWSOFT/ZW3D/ZW 3D ${ZW3D_MCP_YEAR}/custom/apilibs/"
+            "$ENV{APPDATA}/ZWSOFT/ZW3D/ZW3D ${ZW3D_MCP_YEAR}/custom/apilibs/"
     COMMENT "Installing zw3dmcp.dll into the user apilibs folder (close ZW3D first)")
 endif()

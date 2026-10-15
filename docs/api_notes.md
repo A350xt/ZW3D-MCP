@@ -23,7 +23,7 @@ confirmed by running `tools/smoke_test.py` inside ZW3D and are the first thing t
   (mandatory for dynamic unload).
 - Loading, any one of:
   1. ZW3D Applications Manager (path is remembered in the registry).
-  2. Copy the DLL to `%APPDATA%\ZWSOFT\ZW3D\ZW 3D 2025\custom\apilibs` (scanned at start-up). CMake option `-DZW3D_MCP_INSTALL_USER=ON` does this after each build.
+  2. Copy the DLL to `%APPDATA%\ZWSOFT\ZW3D\ZW3D 2025\custom\apilibs` (scanned at start-up). CMake option `-DZW3D_MCP_INSTALL_USER=ON` does this after each build.
   3. Create `apilibs` in the install directory and copy it there.
   4. Registry-registered resource path (recommended by vendor for distributed plugins; also needs `ZwResourcePathAdd` in Init).
 - A DLL that is loaded cannot be overwritten: close ZW3D before rebuilding/copying.
