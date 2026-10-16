@@ -179,6 +179,14 @@ def plane_normal(frame: dict) -> list[float]:
     return [c / ln for c in n]
 
 
+def inner_loops2d(loops, name: str = "holes") -> list[list[dict]]:
+    if loops is None:
+        return []
+    if not isinstance(loops, (list, tuple)):
+        raise bad(f"{name} must be a list of loops (each loop is a segment list)")
+    return [segments2d(loop, f"{name}[{i}]") for i, loop in enumerate(loops)]
+
+
 def segments2d(segs, name: str = "segments") -> list[dict]:
     """Same segment format as `segments`, but points are [x, y] in the sketch plane."""
     def up(p):
@@ -240,3 +248,45 @@ def check_axis_not_crossed(points, axis_point, axis_dir, plane_normal_hint=None)
     if min(side) < -tol * scale and max(side) > tol * scale:
         raise bad("The profile crosses the rotation axis (it has points on both sides of it)",
                   "Keep the whole profile on one side of the axis, or revolve each half separately.")
+
+
+def mirror_plane(plane) -> dict:
+    """'XY' | 'YZ' | 'ZX', {"name":..,"origin":p}, or {"origin":p,"normal":v}. Returns {"origin","normal"}."""
+    if isinstance(plane, dict) and plane.get("normal") is not None:
+        return {"origin": point(plane.get("origin", [0, 0, 0]), "plane.origin"), "normal": vector(plane["normal"], "plane.normal")}
+    frame = sketch_plane(plane)
+    return {"origin": frame["origin"], "normal": plane_normal(frame)}
+
+
+def path_segments(segs, name: str = "path") -> list[dict]:
+    """A connected OPEN chain of 3D lines/arcs (each start equals the previous end). No circles."""
+    if not isinstance(segs, (list, tuple)) or not segs:
+        raise bad(f"{name} must be a non-empty list of line/arc segments")
+    out = []
+    for i, sg in enumerate(segs):
+        if not isinstance(sg, dict) or sg.get("type") not in ("line", "arc"):
+            raise bad(f"{name}[{i}].type must be 'line' or 'arc'")
+        out.append(_one_segment(sg, f"{name}[{i}]"))
+    for i in range(len(out) - 1):
+        if _norm(_sub(out[i]["end"], out[i + 1]["start"])) > 1e-6:
+            raise bad(f"{name}: segment {i} does not end where segment {i + 1} starts",
+                      "List path segments in order; each start must equal the previous end.")
+    return out
+
+
+def _one_segment(sg, name):
+    item = {"type": sg["type"], "start": point(sg.get("start"), f"{name}.start"), "end": point(sg.get("end"), f"{name}.end")}
+    if sg["type"] == "arc":
+        item["through"] = point(sg.get("through"), f"{name}.through")
+        a, b, c = item["start"], item["through"], item["end"]
+        if _norm(_cross(_sub(b, a), _sub(c, a))) < 1e-9:
+            raise bad(f"{name}: start, through and end are collinear")
+    elif _norm(_sub(item["start"], item["end"])) < 1e-9:
+        raise bad(f"{name}: zero-length line")
+    return item
+
+
+def number(value, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise bad(f"{name} must be a finite number, got {value!r}")
+    return float(value)

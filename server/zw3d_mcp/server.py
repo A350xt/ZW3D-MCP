@@ -245,6 +245,7 @@ def sketch_extrude(
     draft_angle: float = 0.0,
     dimensions: bool = True,
     combine: Combine = "none",
+    holes: list[list[dict]] | None = None,
 ) -> dict:
     """Create a real SKETCH on a plane and extrude it (the sketch stays in the feature tree, so the part can be edited
     from the sketch later; extrude_profile/extrude_polygon only draw loose wireframe instead).
@@ -256,7 +257,9 @@ def sketch_extrude(
       {"type":"circle","center":[x,y],"radius":r}
     distance: extrusion depth along the plane normal (mm); start: start offset; symmetric: extrude distance/2 to both
     sides; reverse: go against the normal. dimensions=True adds driving dimensions (line lengths, circle diameters)
-    to the sketch (best effort; the result reports dimensions_added / dimensions_failed). """
+    to the sketch (best effort; the result reports dimensions_added / dimensions_failed).
+    holes: optional inner loops (each a segment list in the same 2D format, e.g. a circle) cut out of the profile,
+    so one call makes a plate with holes or a washer. Inner loops must lie inside the outer loop and not touch it. """
     frame = v.sketch_plane(plane)
     segs = v.segments2d(segments)
     if distance <= 0:
@@ -266,9 +269,12 @@ def sketch_extrude(
     else:
         start, end = float(start), float(start) + float(distance)
     n = v.plane_normal(frame)
-    return _call("sketch_extrude", {
-        "plane": frame, "segments": segs, "distance": end, "start": start, "draft_angle": float(draft_angle),
-        "direction": [-c for c in n] if reverse else None, "dimensions": bool(dimensions), "combine": combine})
+    params = {"plane": frame, "segments": segs, "distance": end, "start": start, "draft_angle": float(draft_angle),
+              "direction": [-c for c in n] if reverse else None, "dimensions": bool(dimensions), "combine": combine}
+    inner = v.inner_loops2d(holes)
+    if inner:
+        params["inner_loops"] = inner
+    return _call("sketch_extrude", params)
 
 
 @mcp.tool()
@@ -365,6 +371,222 @@ def redo(steps: int = 1) -> dict:
     if not (1 <= steps <= 50):
         raise v.bad("steps must be between 1 and 50")
     return _call("redo", {"steps": steps})
+
+
+# ---------------------------------------------------------------- features: hole / pattern / mirror / draft / sweep / loft
+@mcp.tool()
+def create_hole(face_id: int, points: list[list[float]], diameter: float, depth: float | None = None,
+                through: bool = False, hole_type: Literal["simple", "counterbore", "countersink"] = "simple",
+                diameter2: float | None = None, depth2: float | None = None) -> dict:
+    """Drill hole(s) into a planar face, perpendicular to it. face_id from list_faces; points: [[x,y,z],...] locations
+    (projected onto the face); diameter in mm; give depth (blind) or through=True. counterbore/countersink use
+    diameter2 (default 1.6 x diameter) and depth2 (default 0.6 x diameter). Returns feature_id (usable by
+    pattern_linear / pattern_circular / mirror) and the resulting shapes with bbox and volume."""
+    if not points:
+        raise v.bad("points must list at least one hole location")
+    params = {"face_id": v.id_list([face_id], "face_id")[0], "points": [v.point(p, "points[i]") for p in points],
+              "diameter": v.positive(diameter, "diameter"), "through": bool(through), "hole_type": hole_type}
+    if not through:
+        if depth is None:
+            raise v.bad("A blind hole needs depth (or set through=True)")
+        params["depth"] = v.positive(depth, "depth")
+    if diameter2 is not None:
+        params["diameter2"] = v.positive(diameter2, "diameter2")
+    if depth2 is not None:
+        params["depth2"] = v.positive(depth2, "depth2")
+    return _call("create_hole", params)
+
+
+def _target(shape_id, feature_ids):
+    if (shape_id is None) == (feature_ids is None):
+        raise v.bad("Give exactly one of shape_id (pattern/mirror a solid) or feature_ids (pattern/mirror features, "
+                    "e.g. a hole's feature_id)")
+    if shape_id is not None:
+        return "shape", {"shape_id": v.id_list([shape_id], "shape_id")[0]}
+    return "feature", {"feature_ids": v.id_list(feature_ids, "feature_ids")}
+
+
+@mcp.tool()
+@_with_combine_help
+def pattern_linear(count: int, spacing: float, direction: list[float], shape_id: int | None = None,
+                   feature_ids: list[int] | None = None, count2: int | None = None, spacing2: float | None = None,
+                   direction2: list[float] | None = None, combine: Combine = "none") -> dict:
+    """Linear pattern of a solid (shape_id) or of features (feature_ids, e.g. a hole). count includes the original.
+    spacing in mm along direction; add count2/spacing2/direction2 for a second direction (grid). For solids use
+    combine='add' to fuse the copies, 'none' for separate bodies. """
+    kind, target = _target(shape_id, feature_ids)
+    if not isinstance(count, int) or count < 2:
+        raise v.bad("count must be an integer >= 2 (it includes the original)")
+    params = {"kind": "linear", "count": count, "spacing": v.positive(spacing, "spacing"),
+              "direction": v.vector(direction, "direction"), "combine": combine, **target}
+    if count2 is not None or spacing2 is not None or direction2 is not None:
+        if count2 is None or spacing2 is None or direction2 is None or count2 < 2:
+            raise v.bad("A second direction needs count2 (>=2), spacing2 and direction2 together")
+        params.update({"count2": count2, "spacing2": v.positive(spacing2, "spacing2"),
+                       "direction2": v.vector(direction2, "direction2")})
+    return _call("pattern_shape" if kind == "shape" else "pattern_feature", params)
+
+
+@mcp.tool()
+@_with_combine_help
+def pattern_circular(count: int, axis_point: list[float], axis_direction: list[float], angle: float | None = None,
+                     shape_id: int | None = None, feature_ids: list[int] | None = None,
+                     combine: Combine = "none") -> dict:
+    """Circular pattern around an axis. count includes the original; angle is the step between neighbours in degrees
+    (default 360/count = evenly around the full circle). Target is a solid (shape_id) or features (feature_ids). """
+    kind, target = _target(shape_id, feature_ids)
+    if not isinstance(count, int) or count < 2:
+        raise v.bad("count must be an integer >= 2 (it includes the original)")
+    step = 360.0 / count if angle is None else v.positive(angle, "angle")
+    return _call("pattern_shape" if kind == "shape" else "pattern_feature", {
+        "kind": "circular", "count": count, "angle": step, "axis_point": v.point(axis_point, "axis_point"),
+        "axis_direction": v.vector(axis_direction, "axis_direction"), "combine": combine, **target})
+
+
+@mcp.tool()
+@_with_combine_help
+def mirror(plane: str | dict, shape_id: int | None = None, feature_ids: list[int] | None = None,
+           combine: Combine = "none") -> dict:
+    """Mirror a solid (shape_id) or features (feature_ids) across a plane: 'XY', 'YZ', 'ZX' (through the origin),
+    {"name":"YZ","origin":[x,y,z]} for an offset plane, or {"origin":[..],"normal":[..]}. For a solid, combine='add' fuses the
+    mirror image into the original (symmetric part), 'none' keeps it as a separate body. """
+    kind, target = _target(shape_id, feature_ids)
+    return _call("mirror_shape" if kind == "shape" else "mirror_feature",
+                 {"plane": v.mirror_plane(plane), "combine": combine, **target})
+
+
+@mcp.tool()
+def draft_faces(face_ids: list[int], neutral_face_ids: list[int], angle: float, pull_direction: list[float]) -> dict:
+    """Add a draft (taper) to faces: they tilt by `angle` degrees (0 < angle < 89) about the neutral faces, which stay
+    fixed, relative to the pull_direction vector (the mold opening direction). Use list_faces to pick faces."""
+    if not (0 < angle < 89):
+        raise v.bad("angle must be between 0 and 89 degrees")
+    return _call("draft_faces", {"face_ids": v.id_list(face_ids, "face_ids"),
+                                 "neutral_face_ids": v.id_list(neutral_face_ids, "neutral_face_ids"),
+                                 "angle": float(angle), "pull_direction": v.vector(pull_direction, "pull_direction")})
+
+
+@mcp.tool()
+@_with_combine_help
+def sweep(profile: list[dict], path: list[dict], combine: Combine = "none") -> dict:
+    """Sweep a closed profile along a path. profile: closed loop of 3D segments (same line/arc/circle format as
+    extrude_profile) lying in a plane PERPENDICULAR to the path at its start. path: connected open chain of 3D
+    {"type":"line"|"arc",...} segments, each start equal to the previous end. Example: a pipe = circle profile + straight
+    or arced path. Loose wireframe is used for profile and path (no sketch). """
+    return _call("sweep", {"profile": v.segments(profile, "profile"), "path": v.path_segments(path), "combine": combine})
+
+
+@mcp.tool()
+@_with_combine_help
+def loft(sections: list[list[dict]], combine: Combine = "none") -> dict:
+    """Loft a solid through 2 or more closed cross-sections (each a closed loop of 3D segments, e.g. a circle at
+    z=0 and a square at z=50). Keep the sections in order and give them the same segment count/orientation for a clean
+    result. """
+    if not isinstance(sections, (list, tuple)) or len(sections) < 2:
+        raise v.bad("loft needs at least 2 sections")
+    return _call("loft", {"sections": [v.segments(sec, f"sections[{i}]") for i, sec in enumerate(sections)],
+                          "combine": combine})
+
+
+@mcp.tool()
+def list_features() -> dict:
+    """List the feature ids of the active part's history (use with pattern_*/mirror feature targets)."""
+    return _call("list_features")
+
+
+# ---------------------------------------------------------------- variables / parametric edits
+@mcp.tool()
+def list_variables() -> dict:
+    """List the active part's variables (name, kind, value in mm/deg, expression)."""
+    return _call("list_variables")
+
+
+@mcp.tool()
+def set_variable(name: str, value: float | None = None, expression: str | None = None) -> dict:
+    """Change an existing part variable (give a numeric value in mm/deg, or an expression string) and regenerate the part.
+    Returns the new shapes with bbox/volume so the effect can be checked."""
+    if (value is None) == (expression is None):
+        raise v.bad("Give exactly one of value or expression")
+    params: dict = {"name": name}
+    if value is not None:
+        params["value"] = v.number(value, "value")
+    else:
+        params["expression"] = expression
+    return _call("set_variable", params)
+
+
+@mcp.tool()
+def add_variable(name: str, value: float | None = None, expression: str | None = None,
+                 kind: Literal["number", "distance", "angle"] = "number") -> dict:
+    """Create a new part variable (kind: unitless number, distance in mm, angle in degrees)."""
+    if (value is None) == (expression is None):
+        raise v.bad("Give exactly one of value or expression")
+    params: dict = {"name": name, "kind": kind}
+    if value is not None:
+        params["value"] = v.number(value, "value")
+    else:
+        params["expression"] = expression
+    return _call("add_variable", params)
+
+
+@mcp.tool()
+def list_sketch_variables(sketch_id: int) -> dict:
+    """List the driving dimensions (variables) of a sketch created by sketch_extrude/sketch_revolve (use its sketch_id)."""
+    return _call("list_sketch_variables", {"sketch_id": v.id_list([sketch_id], "sketch_id")[0]})
+
+
+@mcp.tool()
+def set_sketch_variable(sketch_id: int, name: str, value: float | None = None, expression: str | None = None) -> dict:
+    """Edit one sketch dimension and regenerate the model: this is how you resize a feature after the fact. Get names from
+    list_sketch_variables. Returns the updated shapes with bbox/volume."""
+    if (value is None) == (expression is None):
+        raise v.bad("Give exactly one of value or expression")
+    params: dict = {"sketch_id": v.id_list([sketch_id], "sketch_id")[0], "name": name}
+    if value is not None:
+        params["value"] = v.number(value, "value")
+    else:
+        params["expression"] = expression
+    return _call("set_sketch_variable", params)
+
+
+# ---------------------------------------------------------------- assemblies and drawings (basic)
+@mcp.tool()
+def new_assembly(name: str) -> dict:
+    """Create a new assembly file (.Z3ASM) and make it active. Then use insert_component. Part modeling tools do not work
+    inside an assembly: switch back with new_part or by opening a part."""
+    if not name or not name.strip():
+        raise v.bad("name must not be empty")
+    return _call("new_assembly", {"name": name.strip()})
+
+
+@mcp.tool()
+def insert_component(file: str, position: list[float] | None = None, anchor: bool = False,
+                     part_name: str | None = None) -> dict:
+    """Insert a saved part file (full path, e.g. C:\\work\\bolt.Z3PRT) into the active assembly at `position` [x,y,z] mm
+    (default origin). anchor=True fixes it in place. Returns component_id."""
+    if not file or not file.strip():
+        raise v.bad("file must be the path of a saved part")
+    params: dict = {"file": file.strip(), "anchor": bool(anchor)}
+    if position is not None:
+        params["position"] = v.point(position, "position")
+    if part_name:
+        params["part_name"] = part_name
+    return _call("insert_component", params)
+
+
+@mcp.tool()
+def list_components() -> dict:
+    """List the component ids in the active assembly."""
+    return _call("list_components")
+
+
+@mcp.tool()
+def new_drawing(name: str, part_file: str) -> dict:
+    """Create a new drawing (.Z3DRW) with the standard multi-view layout of a saved part or assembly (give its full path;
+    save_part first). No dimensions or annotations are added yet; save_part (with a path) stores the drawing."""
+    if not name.strip() or not part_file.strip():
+        raise v.bad("name and part_file must not be empty", "part_file must be the full path of a saved part/assembly.")
+    return _call("new_drawing", {"name": name.strip(), "part_file": part_file.strip()})
 
 
 # ---------------------------------------------------------------- queries

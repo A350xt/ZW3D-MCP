@@ -39,7 +39,8 @@ add_library(zw3dmcp SHARED
   src/handlers/common.cpp
   src/handlers/part.cpp
   src/handlers/query.cpp
-  src/handlers/file.cpp)
+  src/handlers/file.cpp
+  src/handlers/misc.cpp)
 
 set_target_properties(zw3dmcp PROPERTIES OUTPUT_NAME "zw3dmcp" PREFIX "")  # DLL name fixes Init/Exit names
 target_compile_features(zw3dmcp PRIVATE cxx_std_17)

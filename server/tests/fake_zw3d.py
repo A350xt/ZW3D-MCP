@@ -82,6 +82,12 @@ class State:
         self.next_id = 1
         self.faces: dict[int, tuple[int, dict]] = {}
         self.edges: dict[int, tuple[int, float]] = {}
+        self.features: list[int] = []
+        self.hole_effects: dict[int, dict] = {}   # feature id -> {"shape": id, "removed": mm^3}
+        self.vars: dict[str, dict] = {}
+        self.sketch_vars: dict[int, dict] = {}    # sketch id -> {"shape": id|None, "vars": {name: {"value":v,"kind":k}}}
+        self.asm = None                            # {"name":..., "components": [ids]} while an assembly is active
+        self.drawing = None
 
     def nid(self):
         i = self.next_id
@@ -106,9 +112,18 @@ class Fake:
             "chamfer_edges": self.chamfer_edges, "shell_shape": self.shell_shape,
             "undo": self.undo, "redo": self.redo,
             "sketch_extrude": self.sketch_extrude, "sketch_revolve": self.sketch_revolve,
+            "create_hole": self.create_hole, "pattern_shape": self.pattern_shape, "pattern_feature": self.pattern_feature,
+            "mirror_shape": self.mirror_shape, "mirror_feature": self.mirror_feature, "draft_faces": self.draft_faces,
+            "sweep": self.sweep, "loft": self.loft, "list_features": self.list_features,
+            "list_variables": self.list_variables, "set_variable": self.set_variable, "add_variable": self.add_variable,
+            "list_sketch_variables": self.list_sketch_variables, "set_sketch_variable": self.set_sketch_variable,
+            "new_assembly": self.new_assembly, "insert_component": self.insert_component,
+            "list_components": self.list_components, "new_drawing": self.new_drawing,
         }
         self.mutating = {"create_box", "create_cylinder", "create_sphere", "extrude_polygon", "revolve_polygon",
-                         "extrude_profile", "revolve_profile", "sketch_extrude", "sketch_revolve", "boolean", "fillet_edges", "chamfer_edges",
+                         "extrude_profile", "revolve_profile", "sketch_extrude", "sketch_revolve", "boolean",
+                         "create_hole", "pattern_shape", "pattern_feature", "mirror_shape", "mirror_feature",
+                         "draft_faces", "sweep", "loft", "set_variable", "add_variable", "set_sketch_variable", "fillet_edges", "chamfer_edges",
                          "shell_shape"}
         self.undo_stack: list = []
         self.redo_stack: list = []
@@ -357,17 +372,42 @@ class Fake:
         return segs3, x, y
 
     def _with_sketch_info(self, res, p):
-        res["sketch_id"] = self.s.nid()
+        sk = self.s.nid()
+        res["sketch_id"] = sk
         want = p.get("dimensions", True)
-        res["dimensions_added"] = sum(1 for sg in p["segments"] if sg["type"] in ("line", "circle")) if want else 0
+        dims = {}
+        if want:
+            k = 0
+            for sg in p["segments"]:
+                if sg["type"] == "line":
+                    k += 1
+                    dims[f"D{k}"] = {"kind": "distance", "value": _len(_sub(sg["end"], sg["start"])) if len(sg["start"]) == 3
+                                     else math.dist(sg["start"], sg["end"]), "scale": 1}
+                elif sg["type"] == "circle":
+                    k += 1
+                    dims[f"D{k}"] = {"kind": "distance", "value": 2 * sg["radius"], "scale": 2}
+        res["dimensions_added"] = len(dims)
         res["dimensions_failed"] = 0
+        self.s.sketch_vars[sk] = {"shape": res.get("shape_id"), "vars": dims}
         return res
 
     def sketch_extrude(self, p):
         segs3, _, _ = self._sketch_to_3d(p)
         q = {k: p[k] for k in ("distance", "start", "draft_angle", "combine", "direction") if k in p}
         q["segments"] = segs3
-        return self._with_sketch_info(self.extrude_profile(q), p)
+        res = self.extrude_profile(q)
+        if p.get("inner_loops") and res.get("shape_id"):
+            outer, _ = _poly_area_normal(self._segments_to_polygon(segs3))
+            holes = 0.0
+            for loop in p["inner_loops"]:
+                l3, _, _ = self._sketch_to_3d({"plane": p["plane"], "segments": loop})
+                holes += _poly_area_normal(self._segments_to_polygon(l3))[0]
+            if holes >= outer:
+                raise ApiError("CMMD_EXEC_ERROR", "Inner loops cover the whole profile", "Make the holes smaller.", -152)
+            sh = self.s.shapes[res["shape_id"]]
+            sh["volume"] *= 1 - holes / outer
+            res.update(self.describe(res["shape_id"]))
+        return self._with_sketch_info(res, p)
 
     def sketch_revolve(self, p):
         segs3, x, y = self._sketch_to_3d(p)
@@ -377,6 +417,265 @@ class Fake:
              "axis_point": _add(o, _add(_mul(x, ap[0]), _mul(y, ap[1]))),
              "axis_direction": _add(_mul(x, ad[0]), _mul(y, ad[1]))}
         return self._with_sketch_info(self.revolve_profile(q), p)
+
+    # ---------------------------------------------------------------- batch 4 (approximate geometry, enough to test the tool flow)
+    def _summary(self):
+        return {"shapes": sorted(self.s.shapes), "shape_details": [self.describe(i) for i in sorted(self.s.shapes)]}
+
+    def _feature(self):
+        fid = self.s.nid()
+        self.s.features.append(fid)
+        return fid
+
+    def create_hole(self, p):
+        self.need_part()
+        fid = p["face_id"]
+        if fid not in self.s.faces:
+            raise ApiError("INVALID_INPUT", f"face {fid} does not exist", "Use list_faces.", -31)
+        sid, fb = self.s.faces[fid]
+        if "normal" not in fb:
+            raise ApiError("CMMD_EXEC_ERROR", "fake holes need a planar face", "", -152)
+        ax = fb["normal"].index(1.0)
+        bb = self.s.shapes[sid]["bbox"]
+        extent = bb["max"][ax] - bb["min"][ax]
+        r = p["diameter"] / 2
+        length = extent if p.get("through") else min(p["depth"], extent)
+        for pt in p["points"]:
+            for k in range(3):
+                if k != ax and not (fb["min"][k] - 1e-6 <= pt[k] <= fb["max"][k] + 1e-6):
+                    raise ApiError("CMMD_EXEC_ERROR", "Hole location is outside the face", "Pick points on the face.", -152)
+        removed = len(p["points"]) * math.pi * r * r * length
+        self.s.shapes[sid]["volume"] = max(self.s.shapes[sid]["volume"] - removed, 0.0)
+        feat = self._feature()
+        self.s.hole_effects[feat] = {"shape": sid, "removed": removed}
+        return {**self._summary(), "feature_id": feat}
+
+    @staticmethod
+    def _rotate(pt, origin, axis, deg):
+        a = math.radians(deg)
+        k = _unit(axis)
+        v = _sub(pt, origin)
+        rot = _add(_add(_mul(v, math.cos(a)), _mul(_cross(k, v), math.sin(a))), _mul(k, _dot(k, v) * (1 - math.cos(a))))
+        return _add(origin, rot)
+
+    def _copy_shape(self, sid, transform, combine):
+        sh = self.s.shapes[sid]
+        mn, mx = sh["bbox"]["min"], sh["bbox"]["max"]
+        corners = [[x, y, z] for x in (mn[0], mx[0]) for y in (mn[1], mx[1]) for z in (mn[2], mx[2])]
+        moved = [transform(c) for c in corners]
+        bb = {"min": [min(c[i] for c in moved) for i in range(3)], "max": [max(c[i] for c in moved) for i in range(3)]}
+        n_before = set(self.s.shapes)
+        self.add_shape("copy", bb, sh["volume"], sh["area"], [], [bb], combine)
+        return sorted(set(self.s.shapes) - n_before)
+
+    def pattern_shape(self, p):
+        self.need_part()
+        sid = p["shape_id"]
+        self.shape(sid)
+        if p["count"] < 2:
+            raise ApiError("INVALID_INPUT", "count must be >= 2", "", -31)
+        added = []
+        combine = p.get("combine", "none")
+        if p["kind"] == "linear":
+            d1 = _unit(p["direction"])
+            n2 = p.get("count2") or 1
+            d2 = _unit(p["direction2"]) if p.get("direction2") else [0, 0, 0]
+            for j in range(n2):
+                for i in range(p["count"]):
+                    if i == 0 and j == 0:
+                        continue
+                    off = _add(_mul(d1, p["spacing"] * i), _mul(d2, p.get("spacing2", 0) * j))
+                    added += self._copy_shape(sid, lambda c, off=off: _add(c, off), combine)
+        else:
+            for i in range(1, p["count"]):
+                added += self._copy_shape(sid, lambda c, i=i: self._rotate(c, p["axis_point"], p["axis_direction"], p["angle"] * i), combine)
+        return {**self._summary(), "pattern_id": self.s.nid(), "added_shape_ids": added}
+
+    def pattern_feature(self, p):
+        self.need_part()
+        n = p["count"] * (p.get("count2") or 1)
+        for fid in p["feature_ids"]:
+            eff = self.s.hole_effects.get(fid)
+            if eff is None:
+                raise ApiError("INVALID_INPUT", f"feature {fid} cannot be patterned", "Use a feature_id returned by create_hole.", -31)
+            sh = self.s.shapes[eff["shape"]]
+            sh["volume"] = max(sh["volume"] - eff["removed"] * (n - 1), 0.0)
+        return {**self._summary(), "pattern_id": self.s.nid()}
+
+    def mirror_shape(self, p):
+        self.need_part()
+        sid = p["shape_id"]
+        self.shape(sid)
+        n = _unit(p["plane"]["normal"])
+        if sorted(abs(c) for c in n) != [0.0, 0.0, 1.0]:
+            raise ApiError("CMMD_EXEC_ERROR", "fake mirror supports axis-aligned planes only", "", -152)
+        ax = [abs(c) for c in n].index(1.0)
+        c0 = p["plane"]["origin"][ax]
+
+        def refl(c):
+            c = list(c)
+            c[ax] = 2 * c0 - c[ax]
+            return c
+        added = self._copy_shape(sid, refl, p.get("combine", "none"))
+        return {**self._summary(), "added_shape_ids": added}
+
+    def mirror_feature(self, p):
+        self.need_part()
+        for fid in p["feature_ids"]:
+            eff = self.s.hole_effects.get(fid)
+            if eff is None:
+                raise ApiError("INVALID_INPUT", f"feature {fid} cannot be mirrored", "Use a feature_id returned by create_hole.", -31)
+            sh = self.s.shapes[eff["shape"]]
+            sh["volume"] = max(sh["volume"] - eff["removed"], 0.0)
+        return {**self._summary(), "feature_id": self._feature()}
+
+    def draft_faces(self, p):
+        self.need_part()
+        owners = set()
+        for f in p["face_ids"] + p["neutral_face_ids"]:
+            if f not in self.s.faces:
+                raise ApiError("INVALID_INPUT", f"face {f} does not exist", "Use list_faces.", -31)
+            owners.add(self.s.faces[f][0])
+        if len(owners) != 1:
+            raise ApiError("INVALID_INPUT", "All faces must belong to the same shape", "", -31)
+        if set(p["face_ids"]) & set(p["neutral_face_ids"]):
+            raise ApiError("INVALID_INPUT", "A face cannot be both drafted and neutral", "", -31)
+        return {**self._summary(), "feature_id": self._feature()}  # fake: volume change not modelled
+
+    @staticmethod
+    def _path_length(path):
+        total = 0.0
+        for sg in path:
+            if sg["type"] == "line":
+                total += _len(_sub(sg["end"], sg["start"]))
+            else:
+                a, b, c = sg["start"], sg["through"], sg["end"]
+                cen = _circumcenter(a, b, c)
+                r = _len(_sub(a, cen))
+                u = _unit(_sub(a, cen))
+                n = _unit(_cross(_sub(b, a), _sub(c, a)))
+                w = _cross(n, u)
+                d = _sub(c, cen)
+                total += r * (math.atan2(_dot(d, w), _dot(d, u)) % (2 * math.pi))
+        return total
+
+    def sweep(self, p):
+        self.need_part()
+        poly = self._segments_to_polygon(p["profile"])
+        area, n = _poly_area_normal(poly)
+        path = p["path"]
+        d0 = _unit(_sub(path[0]["through"] if path[0]["type"] == "arc" else path[0]["end"], path[0]["start"]))
+        if abs(_dot(n, d0)) < 0.7:
+            raise ApiError("CMMD_EXEC_ERROR", "The profile must be perpendicular to the path at its start",
+                           "Orient the profile plane normal along the first path segment.", -152)
+        length = self._path_length(path)
+        end = path[-1]["end"]
+        shift = _sub(end, path[0]["start"])
+        pts = poly + [_add(q, shift) for q in poly] + [sg[k] for sg in path for k in ("start", "end")]
+        bb = {"min": [min(q[i] for q in pts) for i in range(3)], "max": [max(q[i] for q in pts) for i in range(3)]}
+        per = sum(_len(_sub(poly[i], poly[(i + 1) % len(poly)])) for i in range(len(poly)))
+        return self.add_shape("sweep", bb, area * length, per * length + 2 * area, [], [bb], p.get("combine", "none"))
+
+    def loft(self, p):
+        self.need_part()
+        secs = p["sections"]
+        if len(secs) < 2:
+            raise ApiError("INVALID_INPUT", "loft needs at least 2 sections", "", -31)
+        polys = [self._segments_to_polygon(s) for s in secs]
+        areas = [_poly_area_normal(q)[0] for q in polys]
+        cens = [_poly_centroid(q) for q in polys]
+        vol = 0.0
+        for i in range(len(secs) - 1):
+            h = _len(_sub(cens[i + 1], cens[i]))
+            vol += h / 3 * (areas[i] + areas[i + 1] + math.sqrt(areas[i] * areas[i + 1]))
+        pts = [q for poly in polys for q in poly]
+        bb = {"min": [min(q[i] for q in pts) for i in range(3)], "max": [max(q[i] for q in pts) for i in range(3)]}
+        return self.add_shape("loft", bb, vol, 2 * max(areas), [], [bb], p.get("combine", "none"))
+
+    def list_features(self, p):
+        self.need_part()
+        return {"count": len(self.s.features), "feature_ids": list(self.s.features)}
+
+    def list_variables(self, p):
+        self.need_part()
+        return {"count": len(self.s.vars), "variables": [{"name": k, **v} for k, v in self.s.vars.items()]}
+
+    def add_variable(self, p):
+        self.need_part()
+        if p["name"] in self.s.vars:
+            raise ApiError("NAME_IN_USE", f"variable {p['name']} already exists", "Use set_variable.", -248)
+        val = {"kind": p.get("kind", "number")}
+        if "value" in p:
+            val["value"] = p["value"]
+        else:
+            val["expression"] = p["expression"]
+        self.s.vars[p["name"]] = val
+        return {"variable": {"name": p["name"], **val}}
+
+    def set_variable(self, p):
+        self.need_part()
+        if p["name"] not in self.s.vars:
+            raise ApiError("VARIABLE_NOT_FOUND", f"variable {p['name']} not found", "Call list_variables.", None)
+        var = self.s.vars[p["name"]]
+        var.pop("expression", None)
+        if "value" in p:
+            var["value"] = p["value"]
+        else:
+            var.pop("value", None)
+            var["expression"] = p["expression"]
+        return {"variable": {"name": p["name"], **var}, **self._summary()}
+
+    def _sketch(self, sid):
+        self.need_part()
+        if sid not in self.s.sketch_vars:
+            raise ApiError("INVALID_INPUT", f"sketch {sid} does not exist", "Use the sketch_id returned by sketch_extrude.", -31)
+        return self.s.sketch_vars[sid]
+
+    def list_sketch_variables(self, p):
+        sk = self._sketch(p["sketch_id"])
+        return {"sketch_id": p["sketch_id"], "count": len(sk["vars"]),
+                "variables": [{"name": k, "kind": v["kind"], "value": v["value"]} for k, v in sk["vars"].items()]}
+
+    def set_sketch_variable(self, p):
+        sk = self._sketch(p["sketch_id"])
+        if p["name"] not in sk["vars"]:
+            raise ApiError("VARIABLE_NOT_FOUND", f"sketch variable {p['name']} not found", "Call list_sketch_variables.", None)
+        var = sk["vars"][p["name"]]
+        if "value" not in p:
+            raise ApiError("INVALID_INPUT", "fake supports numeric values only", "", -31)
+        ratio = p["value"] / var["value"]
+        var["value"] = p["value"]
+        if sk["shape"] in self.s.shapes:  # fake regeneration: a circle diameter scales the area (x ratio^2), a line length x ratio
+            self.s.shapes[sk["shape"]]["volume"] *= ratio ** var["scale"]
+        return {"variable": {"name": p["name"], "kind": var["kind"], "value": var["value"]}, **self._summary()}
+
+    def new_assembly(self, p):
+        self.s = State()
+        self.s.file = p["name"]
+        self.s.part = None
+        self.s.asm = {"name": p["name"], "components": []}
+        return {"file": p["name"], "root": os.path.splitext(os.path.basename(p["name"]))[0]}
+
+    def insert_component(self, p):
+        if self.s.asm is None:
+            raise ApiError("WRONG_ROOT_ENV", "Not in an assembly", "Call new_assembly first.", -6)
+        cid = self.s.nid()
+        self.s.asm["components"].append(cid)
+        return {"component_id": cid}
+
+    def list_components(self, p):
+        if self.s.asm is None:
+            raise ApiError("WRONG_ROOT_ENV", "Not in an assembly", "Call new_assembly first.", -6)
+        return {"count": len(self.s.asm["components"]), "component_ids": list(self.s.asm["components"])}
+
+    def new_drawing(self, p):
+        if not p.get("part_file"):
+            raise ApiError("INVALID_PATH", "part_file is required", "", -242)
+        self.s = State()
+        self.s.file = p["name"]
+        self.s.part = None
+        self.s.drawing = {"part_file": p["part_file"]}
+        return {"file": p["name"], "root": os.path.splitext(os.path.basename(p["name"]))[0]}
 
     def chamfer_edges(self, p):
         sh = self.shape(p["shape_id"])

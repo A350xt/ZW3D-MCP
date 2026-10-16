@@ -161,6 +161,7 @@ const std::map<std::string, Handler>& handler_registry() {
     register_query_handlers(m);
     register_part_handlers(m);
     register_file_handlers(m);
+    register_misc_handlers(m);
     return m;
   }();
   return reg;

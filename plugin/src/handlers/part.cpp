@@ -200,7 +200,12 @@ int build_sketch(const json& p, json& info) {
   edit.active = true;
 
   int dims_ok = 0, dims_fail = 0;
-  for (const auto& s : segs) {
+  // Outer loop first, then any inner loops ("holes"): they are just more closed loops in the same sketch.
+  std::vector<json> all_segments(segs.begin(), segs.end());
+  if (p.contains("inner_loops") && p["inner_loops"].is_array())
+    for (const auto& loop : p["inner_loops"])
+      for (const auto& s : loop) all_segments.push_back(s);
+  for (const auto& s : all_segments) {
     std::string type = s.at("type").get<std::string>();
     int id = 0;
     if (type == "line") {
@@ -412,6 +417,285 @@ json h_shell_shape(const json& p) {
   return out;
 }
 
+
+// ---------------------------------------------------------------------------------------------------------------
+// Part features: hole, pattern, mirror, draft, sweep, loft (read from zwapi_cmd_shape*.h, see docs/api_notes.md)
+// ---------------------------------------------------------------------------------------------------------------
+std::vector<int> ids_of(const json& v, const char* name) {
+  if (!v.is_array()) invalid_input(std::string(name) + " 必须是 id 列表");
+  return v.get<std::vector<int>>();
+}
+
+json shapes_summary() {
+  json details = json::array();
+  std::vector<int> ids = inq_shape_ids();
+  for (int sid : ids) details.push_back(describe_shape(sid));
+  return {{"shapes", ids}, {"shape_details", details}};
+}
+
+// Datum plane through `origin` with the given normal (three free points define it).
+int make_datum_plane(const json& plane) {
+  svxPoint o = to_point(plane.at("origin"), "plane.origin");
+  svxVector n = to_vector(plane.at("normal"), "plane.normal");
+  double nl = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+  if (nl < 1e-12) invalid_input("plane.normal 不能为零向量");
+  n = {n.x / nl, n.y / nl, n.z / nl};
+  svxVector t = std::fabs(n.z) < 0.9 ? svxVector{0, 0, 1} : svxVector{1, 0, 0};
+  svxVector u{n.y * t.z - n.z * t.y, n.z * t.x - n.x * t.z, n.x * t.y - n.y * t.x};
+  double ul = std::sqrt(u.x * u.x + u.y * u.y + u.z * u.z);
+  u = {u.x / ul, u.y / ul, u.z / ul};
+  svxVector v{n.y * u.z - n.z * u.y, n.z * u.x - n.x * u.z, n.x * u.y - n.y * u.x};
+  svxPlaneData pd;
+  std::memset(&pd, 0, sizeof(pd));
+  pd.method = VX_PLANE_THREE_POINTS;
+  pd.inpUnion.threePnts.OrgPnt = o;
+  pd.inpUnion.threePnts.XPnt = {o.x + u.x * 10, o.y + u.y * 10, o.z + u.z * 10};
+  pd.inpUnion.threePnts.YPnt = {o.x + v.x * 10, o.y + v.y * 10, o.z + v.z * 10};
+  int id = 0;
+  check_api(cvxPartPlaneNew(&pd, &id), "cvxPartPlaneNew");
+  return id;
+}
+
+// Curve list from 3D segments; also reports the first curve id (loft/sweep reference "a curve + its parent list").
+int make_curvelist(const json& segments, int* first_curve) {
+  if (!segments.is_array() || segments.empty()) invalid_input("segments 不能为空");
+  std::vector<int> curves;
+  for (const auto& s : segments) curves.push_back(add_segment(s));
+  int list = 0;
+  check_api(cvxPartCrvList((int)curves.size(), curves.data(), &list), "cvxPartCrvList");
+  if (first_curve) *first_curve = curves[0];
+  return list;
+}
+
+json h_create_hole(const json& p) {
+  int face = p.at("face_id").get<int>();
+  const json& pts_json = p.at("points");
+  if (!pts_json.is_array() || pts_json.empty()) invalid_input("points 不能为空");
+  std::vector<svxPoint> pts;
+  for (const auto& q : pts_json) pts.push_back(to_point(q, "points[i]"));
+  double dia = p.at("diameter").get<double>();
+  bool through = p.value("through", false);
+  double depth = p.contains("depth") && !p["depth"].is_null() ? p["depth"].get<double>() : 0.0;
+  if (!(dia > 0)) invalid_input("孔径必须为正");
+  if (!through && !(depth > 0)) invalid_input("盲孔需要 depth > 0（或设 through=true）");
+  std::string kind = p.value("hole_type", std::string("simple"));
+  evxHoleType type = kind == "simple" ? VX_HOLE_SIMPLE : kind == "counterbore" ? VX_HOLE_COUNTER_BORE
+                   : kind == "countersink" ? VX_HOLE_COUNTER_SUNK : (evxHoleType)-99;
+  if ((int)type == -99) invalid_input("hole_type 取值无效: " + kind, "可选: simple, counterbore, countersink");
+  DispGuard guard;
+  svxHoleData h;
+  check_api(cvxPartHoleInit(VX_GENERAL_HOLE, (int)type, &h), "cvxPartHoleInit");
+  h.idInsFace = face;
+  h.Count = (int)pts.size();
+  h.Points = pts.data();
+  h.Diameter1 = dia;
+  h.Depth1 = depth;
+  h.End = through ? VX_THROUGH_ALL : VX_BLIND;
+  if (type != VX_HOLE_SIMPLE) {
+    h.Diameter2 = p.value("diameter2", dia * 1.6);
+    h.Depth2 = p.value("depth2", dia * 0.6);
+  }
+  int op = 0;
+  check_api(cvxPartHole(&h, &op), "cvxPartHole");
+  json out = shapes_summary();
+  out["feature_id"] = op;
+  return out;
+}
+
+svxPtnData make_pattern(const json& p, evxBoolType combine) {
+  std::string kind = p.at("kind").get<std::string>();
+  svxPtnData pd;
+  if (kind == "linear") {
+    check_api(cvxPtnDataInit(VX_PATTERN_LINEAR, &pd), "cvxPtnDataInit");
+    pd.combine = combine;
+    pd.ptnData.linear.dir[0] = to_vector(p.at("direction"), "direction");
+    pd.ptnData.linear.num[0] = p.at("count").get<int>();
+    pd.ptnData.linear.spacing[0] = p.at("spacing").get<double>();
+    if (p.contains("direction2") && !p["direction2"].is_null()) {
+      pd.ptnData.linear.useSecondDir = 1;
+      pd.ptnData.linear.dir[1] = to_vector(p["direction2"], "direction2");
+      pd.ptnData.linear.num[1] = p.at("count2").get<int>();
+      pd.ptnData.linear.spacing[1] = p.at("spacing2").get<double>();
+    }
+  } else if (kind == "circular") {
+    check_api(cvxPtnDataInit(VX_PATTERN_CIRCULAR, &pd), "cvxPtnDataInit");
+    pd.combine = combine;
+    pd.ptnData.circular.axis.Pnt = to_point(p.at("axis_point"), "axis_point");
+    pd.ptnData.circular.axis.Dir = to_vector(p.at("axis_direction"), "axis_direction");
+    pd.ptnData.circular.num[0] = p.at("count").get<int>();
+    pd.ptnData.circular.angle = p.at("angle").get<double>();  // degrees between neighbouring instances
+  } else {
+    invalid_input("kind 取值无效: " + kind, "可选: linear, circular");
+  }
+  return pd;
+}
+
+json h_pattern_shape(const json& p) {
+  evxBoolType combine = parse_combine(p);
+  int shape = p.at("shape_id").get<int>();
+  require_shape(shape);
+  svxPtnData pd = make_pattern(p, combine);
+  DispGuard guard;
+  std::vector<int> before = inq_shape_ids();
+  svxPtnGeom g;
+  std::memset(&g, 0, sizeof(g));
+  g.inpData = &pd;
+  int ent = shape, pattern = 0;
+  check_api(cvxPartPatternGeom(1, &ent, &g, &pattern), "cvxPartPatternGeom");
+  json out = shapes_summary();
+  out["pattern_id"] = pattern;
+  json added = json::array();
+  for (int s : out["shapes"].get<std::vector<int>>())
+    if (std::find(before.begin(), before.end(), s) == before.end()) added.push_back(s);
+  out["added_shape_ids"] = added;
+  return out;
+}
+
+json h_pattern_feature(const json& p) {
+  evxBoolType combine = parse_combine(p);
+  std::vector<int> ftrs = ids_of(p.at("feature_ids"), "feature_ids");
+  if (ftrs.empty()) invalid_input("feature_ids 不能为空");
+  svxPtnData pd = make_pattern(p, combine);
+  DispGuard guard;
+  svxPtnFtr f;
+  std::memset(&f, 0, sizeof(f));
+  f.inpData = &pd;
+  int pattern = 0;
+  check_api(cvxPartPatternFtr((int)ftrs.size(), ftrs.data(), &f, &pattern), "cvxPartPatternFtr");
+  json out = shapes_summary();
+  out["pattern_id"] = pattern;
+  return out;
+}
+
+json h_mirror_shape(const json& p) {
+  evxBoolType combine = parse_combine(p);  // none = keep the mirrored copy as a separate body, add = merge into the original
+  int shape = p.at("shape_id").get<int>();
+  require_shape(shape);
+  DispGuard guard;
+  int plane = make_datum_plane(p.at("plane"));
+  svxMirrorGeom m;
+  check_api(cvxPartMirrorGeominit(&m), "cvxPartMirrorGeominit");
+  int ent = shape;
+  m.numEnts = 1;
+  m.idEnts = &ent;
+  m.idPlane = plane;
+  m.combine = combine;
+  if (combine != VX_BOOL_NONE) {
+    m.numShapes = 1;
+    m.idShapes = &ent;
+  }
+  m.keep = 1;
+  std::vector<int> before = inq_shape_ids();
+  int n = 0;
+  int* ids = nullptr;
+  check_api(cvxPartMirrorGeom(&m, &n, &ids), "cvxPartMirrorGeom");
+  if (ids) cvxMemFree(reinterpret_cast<void**>(&ids));
+  json out = shapes_summary();
+  json added = json::array();
+  for (int s : out["shapes"].get<std::vector<int>>())
+    if (std::find(before.begin(), before.end(), s) == before.end()) added.push_back(s);
+  out["added_shape_ids"] = added;
+  return out;
+}
+
+json h_mirror_feature(const json& p) {
+  evxBoolType combine = parse_combine(p);
+  std::vector<int> ftrs = ids_of(p.at("feature_ids"), "feature_ids");
+  if (ftrs.empty()) invalid_input("feature_ids 不能为空");
+  DispGuard guard;
+  int plane = make_datum_plane(p.at("plane"));
+  svxMirrorFtr m;
+  check_api(cvxPartMirrorFtrInit(&m), "cvxPartMirrorFtrInit");
+  m.numFtrs = (int)ftrs.size();
+  m.idFtrs = ftrs.data();
+  m.idPlane = plane;
+  m.combine = combine;
+  m.keep = 1;
+  int id = 0;
+  check_api(cvxPartMirrorFtr(&m, &id), "cvxPartMirrorFtr");
+  json out = shapes_summary();
+  out["feature_id"] = id;
+  return out;
+}
+
+json h_draft_faces(const json& p) {
+  std::vector<int> faces = ids_of(p.at("face_ids"), "face_ids");
+  std::vector<int> neutral = ids_of(p.at("neutral_face_ids"), "neutral_face_ids");
+  if (faces.empty() || neutral.empty()) invalid_input("face_ids 与 neutral_face_ids 都不能为空");
+  double angle = p.at("angle").get<double>();
+  if (!(angle > 0) || angle >= 89) invalid_input("拔模角必须在 (0, 89) 度之间");
+  svxVector dir = to_vector(p.at("pull_direction"), "pull_direction");
+  DispGuard guard;
+  svxDraftData d;
+  check_api(cvxPartDraftInit(VX_FACE_DRAFT, &d), "cvxPartDraftInit");
+  d.Type = VX_STATION_SYM_FACE_DRAFT;  // faces tilt about the neutral (stationary) faces
+  d.iCntDataList = (int)faces.size();
+  d.idEnt = faces.data();
+  d.AngleA1 = angle;
+  d.StationEnt.stationaryFaces.cnt = (int)neutral.size();
+  d.StationEnt.stationaryFaces.idEnt = neutral.data();
+  d.DirP = dir;
+  int id = 0;
+  check_api(cvxPartDraft(&d, &id), "cvxPartDraft");
+  json out = shapes_summary();
+  out["feature_id"] = id;
+  return out;
+}
+
+json h_sweep(const json& p) {
+  evxBoolType combine = parse_combine(p);
+  DispGuard guard;
+  int profile = make_profile(json{{"segments", p.at("profile")}});
+  int first = 0;
+  int path_list = make_curvelist(p.at("path"), &first);
+  svxSweepData sw;
+  check_api(cvxPartSweepInit(&sw), "cvxPartSweepInit");
+  sw.Combine = combine;
+  sw.idProfile = profile;
+  sw.idPath = first;
+  sw.idParent = path_list;
+  sw.UseParent = 1;  // the whole curve list is the path, not just its first curve
+  sw.OffsetTyp = VX_OFFSET_NONE;
+  int id = 0;
+  check_api(cvxPartSweep(&sw, nullptr, &id), "cvxPartSweep");
+  return creation_result(combine, id);
+}
+
+json h_loft(const json& p) {
+  evxBoolType combine = parse_combine(p);
+  const json& sections = p.at("sections");
+  if (!sections.is_array() || sections.size() < 2) invalid_input("放样至少需要 2 个截面");
+  DispGuard guard;
+  std::vector<svxLoftProfile> profs(sections.size());
+  std::memset(profs.data(), 0, sizeof(svxLoftProfile) * profs.size());
+  for (size_t i = 0; i < sections.size(); ++i) {
+    int first = 0;
+    int list = make_curvelist(sections[i], &first);
+    profs[i].idParent = list;
+    profs[i].idProfile = first;
+    profs[i].profDir = 0;
+    profs[i].useStartPnt = 0;
+  }
+  svxLoftData l;
+  check_api(cvxPartLoftInit(&l), "cvxPartLoftInit");
+  l.combine = combine;
+  l.type = VX_LOFT_PROFS;
+  l.numProfs = (int)profs.size();
+  l.profs = profs.data();
+  int id = 0;
+  check_api(cvxPartLoft(&l, &id), "cvxPartLoft");
+  return creation_result(combine, id);
+}
+
+json h_list_features(const json&) {
+  int n = 0;
+  int* ids = nullptr;
+  check_api(cvxPartInqFtrList(&n, &ids), "cvxPartInqFtrList");
+  std::vector<int> v(ids, ids + n);
+  if (ids) cvxMemFree(reinterpret_cast<void**>(&ids));
+  return {{"count", v.size()}, {"feature_ids", v}};
+}
+
 }  // namespace
 
 void register_part_handlers(std::map<std::string, Handler>& m) {
@@ -424,6 +708,15 @@ void register_part_handlers(std::map<std::string, Handler>& m) {
   m["fillet_edges"] = h_fillet_edges;
   m["chamfer_edges"] = h_chamfer_edges;
   m["shell_shape"] = h_shell_shape;
+  m["create_hole"] = h_create_hole;
+  m["pattern_shape"] = h_pattern_shape;
+  m["pattern_feature"] = h_pattern_feature;
+  m["mirror_shape"] = h_mirror_shape;
+  m["mirror_feature"] = h_mirror_feature;
+  m["draft_faces"] = h_draft_faces;
+  m["sweep"] = h_sweep;
+  m["loft"] = h_loft;
+  m["list_features"] = h_list_features;
   m["sketch_extrude"] = h_sketch_extrude;
   m["sketch_revolve"] = h_sketch_revolve;
   m["extrude_profile"] = h_extrude_polygon;

@@ -213,6 +213,105 @@ def main() -> int:
         failures += 0 if ok else 1
         step(b, "redo", "redo", {"steps": 1})
 
+    # ---- batch 4: hole, pattern, mirror, draft, sweep, loft, variables, sketch dimension edit, inner hole
+    pl = step(b, "plate for hole tests", "create_box", {"center": [3000, 0, 10], "size": [100, 60, 20], "combine": "none"})
+    if pl:
+        fl = step(b, "list_faces (find top face)", "list_faces", {"shape_id": pl["shape_id"]})
+        tops = [f for f in (fl or {"faces": []})["faces"] if f.get("surface") == "plane"
+                and abs(abs(f["plane_normal"][2]) - 1) < 1e-6 and abs(f["bounding_box"]["min"][2] - 20) < 1e-6]
+        if tops:
+            h = step(b, "create_hole d10 through", "create_hole", {"face_id": tops[0]["face_id"], "points": [[3000, 0, 20]],
+                     "diameter": 10, "through": True, "hole_type": "simple"})
+            if h:
+                vol = [d for d in h["shape_details"] if d["shape_id"] == pl["shape_id"]]
+                if vol:
+                    approx("plate with hole volume", vol[0]["volume"], 120000 - math.pi * 25 * 20)
+                pf = step(b, "pattern_linear the hole x3", "pattern_feature", {"kind": "linear", "count": 3, "spacing": 20,
+                          "direction": [1, 0, 0], "feature_ids": [h["feature_id"]], "combine": "none"})
+                if pf:
+                    vol = [d for d in pf["shape_details"] if d["shape_id"] == pl["shape_id"]]
+                    if vol:
+                        approx("plate with 3 holes volume", vol[0]["volume"], 120000 - 3 * math.pi * 25 * 20)
+        else:
+            print("       (no top face found, hole tests skipped)")
+            failures += 1
+    cyl4 = step(b, "cylinder for mirror test", "create_cylinder", {"base_center": [3500, 0, 0], "radius": 5, "height": 10, "combine": "none"})
+    if cyl4:
+        mr = step(b, "mirror across YZ plane at x=3400", "mirror_shape", {"shape_id": cyl4["shape_id"], "combine": "none",
+                  "plane": {"origin": [3400, 0, 0], "normal": [1, 0, 0]}})
+        if mr and mr.get("added_shape_ids"):
+            bb = step(b, "mirrored copy bbox (expect x 3295..3305)", "get_bounding_box", {"shape_id": mr["added_shape_ids"][0]})
+            if bb:
+                ok = abs(bb["min"][0] - 3295) < 1e-3 and abs(bb["max"][0] - 3305) < 1e-3
+                failures += 0 if ok else 1
+                print(f"       mirror position correct: {ok}")
+        elif mr:
+            print("       mirror reported no new shape")
+            failures += 1
+    dbx = step(b, "box for draft test", "create_box", {"center": [3700, 0, 15], "size": [40, 40, 30], "combine": "none"})
+    if dbx:
+        fl = step(b, "list_faces (draft box)", "list_faces", {"shape_id": dbx["shape_id"]})
+        if fl:
+            sides = [f["face_id"] for f in fl["faces"] if f.get("surface") == "plane" and abs(f["plane_normal"][2]) < 1e-6]
+            bottom = [f["face_id"] for f in fl["faces"] if f.get("surface") == "plane" and abs(f["plane_normal"][2]) > 0.9
+                      and abs(f["bounding_box"]["min"][2]) < 1e-6]
+            if sides and bottom:
+                dr = step(b, "draft_faces 3 deg (bottom neutral)", "draft_faces", {"face_ids": sides, "neutral_face_ids": bottom,
+                          "angle": 3, "pull_direction": [0, 0, 1]})
+                if dr:
+                    vol = [d for d in dr["shape_details"] if d["shape_id"] == dbx["shape_id"]]
+                    a2 = 40 - 2 * 30 * math.tan(math.radians(3))
+                    want = 30 / 3 * (1600 + a2 * a2 + 40 * a2)
+                    if vol:
+                        approx("drafted box volume", vol[0]["volume"], want, tol=5e-3)
+    sw = step(b, "sweep circle r5 along a 60 mm line", "sweep", {
+        "profile": [{"type": "circle", "center": [4000, 0, 0], "radius": 5, "normal": [0, 0, 1]}],
+        "path": [{"type": "line", "start": [4000, 0, 0], "end": [4000, 0, 60]}], "combine": "none"})
+    if sw:
+        approx("sweep volume", sw["volume"], math.pi * 25 * 60)
+
+    def square(cx, z, half):
+        pts = [[cx - half, -half, z], [cx + half, -half, z], [cx + half, half, z], [cx - half, half, z]]
+        return [{"type": "line", "start": pts[i], "end": pts[(i + 1) % 4]} for i in range(4)]
+    lf = step(b, "loft square 20 -> 10 over 40 mm", "loft", {"sections": [square(4300, 0, 10), square(4300, 40, 5)], "combine": "none"})
+    if lf:
+        approx("loft volume", lf["volume"], 40 / 3 * (400 + 100 + 200), tol=5e-3)
+
+    step(b, "list_variables", "list_variables")
+    step(b, "add_variable mcp_wall = 2.5 mm", "add_variable", {"name": "mcp_wall", "kind": "distance", "value": 2.5})
+    sv = step(b, "set_variable mcp_wall = 3", "set_variable", {"name": "mcp_wall", "value": 3})
+    if sv:
+        print(f"       variable now: {sv['variable']}")
+    sc = step(b, "sketch circle r10 d=10 (for dimension edit)", "sketch_extrude", {
+        "plane": {"origin": [4600, 0, 0], "x_axis": [1, 0, 0], "y_axis": [0, 1, 0]},
+        "segments": [{"type": "circle", "center": [0, 0], "radius": 10}], "distance": 10, "start": 0,
+        "direction": None, "draft_angle": 0, "dimensions": True, "combine": "none"})
+    if sc:
+        lv = step(b, "list_sketch_variables", "list_sketch_variables", {"sketch_id": sc["sketch_id"]})
+        if lv and lv["variables"]:
+            nm = lv["variables"][0]["name"]
+            val = lv["variables"][0].get("value")
+            print(f"       first sketch variable: {nm} = {val}")
+            if val:
+                ed = step(b, f"set_sketch_variable {nm} x2 (volume should grow x4 if it is the diameter)", "set_sketch_variable",
+                          {"sketch_id": sc["sketch_id"], "name": nm, "value": val * 2})
+                if ed:
+                    vol = [d for d in ed["shape_details"] if d["shape_id"] == sc["shape_id"]]
+                    if vol:
+                        print(f"       volume {sc['volume']:.1f} -> {vol[0]['volume']:.1f} (x{vol[0]['volume'] / sc['volume']:.2f})")
+        else:
+            print("       (sketch has no variables: dimensions were not created)")
+            failures += 1
+    ih = step(b, "sketch_extrude 100x60 with inner circle r10", "sketch_extrude", {
+        "plane": {"origin": [5000, 0, 0], "x_axis": [1, 0, 0], "y_axis": [0, 1, 0]},
+        "segments": [{"type": "line", "start": [0, 0], "end": [100, 0]}, {"type": "line", "start": [100, 0], "end": [100, 60]},
+                     {"type": "line", "start": [100, 60], "end": [0, 60]}, {"type": "line", "start": [0, 60], "end": [0, 0]}],
+        "inner_loops": [[{"type": "circle", "center": [50, 30], "radius": 10}]], "distance": 10, "start": 0,
+        "direction": None, "draft_angle": 0, "dimensions": False, "combine": "none"})
+    if ih:
+        approx("plate with inner hole volume", ih["volume"], (6000 - math.pi * 100) * 10)
+    step(b, "list_features", "list_features")
+
     shot = step(b, "screenshot", "screenshot", {"width": 800, "height": 600, "zoom_all": True})
     if shot:
         p = pathlib.Path(shot["path"])
@@ -226,6 +325,17 @@ def main() -> int:
     step(b, "export_step", "export_step", {"path": str(out)})
     step(b, "save_part (Save As, Chinese path)", "save_part",
          {"path": str(pathlib.Path.home() / "mcp_smoke_测试.Z3PRT")})
+
+    # ---- assembly and drawing (these switch the active file, so they run last)
+    saved = str(pathlib.Path.home() / "mcp_smoke_测试.Z3PRT")
+    step(b, "new_assembly", "new_assembly", {"name": f"mcp_smoke_asm_{int(time.time())}"})
+    ic = step(b, "insert_component (the saved smoke part)", "insert_component", {"file": saved, "position": [0, 0, 0], "anchor": True})
+    lc = step(b, "list_components", "list_components")
+    if ic and lc:
+        ok = ic["component_id"] in lc["component_ids"]
+        print(f"       inserted component listed: {ok}")
+        failures += 0 if ok else 1
+    step(b, "new_drawing (standard views of the saved part)", "new_drawing", {"name": f"mcp_smoke_dwg_{int(time.time())}", "part_file": saved})
 
     if a.cases:
         cases = json.loads((ROOT / "server/tests/protocol_cases.json").read_text(encoding="utf-8"))

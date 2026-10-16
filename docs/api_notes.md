@@ -113,3 +113,22 @@ and whether PNG honours Width/Height.
 - `api_code` is `null` for errors that do not come from a ZW3D API call (0 reads as success).
 - Revolve crossing the axis is rejected client-side (profile on both sides of the axis); sketch revolve axis is 2D in sketch frame.
 - STEP files written with a Chinese file name show garbled bytes in the header comment (ZW3D's translator writes GBK); geometry is unaffected.
+
+## Batch 4 (read from headers; NOT yet run on a live ZW3D — `tools/smoke_test.py` has a check for each)
+
+| Tool | API used | Notes / open questions |
+|---|---|---|
+| `create_hole` | `cvxPartHoleInit(VX_GENERAL_HOLE, evxHoleType, &d)`, `cvxPartHole(&d, &idOp)` | `idInsFace` = face, `Points` projected onto it, direction = face normal (`UseDirection = 0`), `End = VX_THROUGH_ALL / VX_BLIND`. counterbore/countersink use `Diameter2/Depth2`. Returns the history op id as `feature_id`. |
+| `pattern_linear/circular` (solid) | `cvxPtnDataInit(type, &pd)`, `cvxPartPatternGeom(1, &shape, &svxPtnGeom, &id)` | linear: `dir[0..1], num[0..1], spacing[0..1], useSecondDir`; circular: `axis{Pnt,Dir}, num[0], angle` (degrees between neighbours). `diameter` of the circular pattern is left at its default. New bodies are found by diffing the shape list. |
+| `pattern_*` (feature) | `cvxPartPatternFtr(n, ids, &svxPtnFtr{inpData}, &id)` | `inc = 0, cntDim = 0, pTableVal = NULL`. |
+| `mirror` | `cvxPartPlaneNew` (method `VX_PLANE_THREE_POINTS`, origin + 2 points 10 mm along u/v) to create a datum plane, then `cvxPartMirrorGeom` (solid) / `cvxPartMirrorFtr` (features) | One datum plane stays in the part per mirror call. `combine = ADD` also passes the original as `idShapes`. |
+| `draft_faces` | `cvxPartDraftInit(VX_FACE_DRAFT)`, `Type = VX_STATION_SYM_FACE_DRAFT`, `idEnt`, `AngleA1`, `StationEnt.stationaryFaces`, `DirP` | Neutral faces = stationary faces. |
+| `sweep` | `cvxPartSweepInit`, `cvxPartSweep(&d, NULL, &id)` | Profile = curve list of 3D wire; path = curve list with `idPath` = its first curve, `idParent` = the list, `UseParent = 1`. Profile must be perpendicular to the path start. |
+| `loft` | `cvxPartLoftInit`, `cvxPartLoft`, `svxLoftProfile{idParent = curve list, idProfile = its first curve}` | `type = VX_LOFT_PROFS`. |
+| variables | `cvxPartInqVars`, `cvxPartVarGet`, `cvxPartVarSet(1, &v, 0)`, `cvxPartVarAdd` | `type = VX_VAR_NUM`, `sub_type = VX_VAR_DST (1) / VX_VAR_ANG (2) / VX_VAR_CONS (0)`, `unit_type = VX_UNIT_MILLIMETER (1) / VX_UNIT_DEG (8)`. Values are database units (mm, deg). |
+| sketch variables | `cvxSkActivate(id, 0)` ... `cvxSkInqVars`, `cvxSkVarGet`, `cvxSkVarSet(1, &v)` ... `cvxRootExit()` | Leaving the sketch should regenerate the model. Unknown: whether the dimensions that `cvxSkAddConsDim` creates appear here under usable names (the smoke test prints them). |
+| inner loops | extra `cvxSkLine2pt / cvxSkArc3pt / cvxSkCirRad` calls in the same sketch | ZW3D must treat nested closed loops of one sketch as a hole. |
+| assembly | `cvxFileNewSingle(VX_FILE_ASSEMBLY, VX_NORMAL_ASSEMBLY)`, `cvxCompInsInit`, `cvxCompIns` (`File`, `Part` = file stem, `Frame` translation, `Anchor`), `cvxPartInqComps` | `Part` (root name) is assumed to equal the file stem of a single-root `.Z3PRT`. |
+| drawing | `cvxFileNewSingle(VX_FILE_SHEET)`, `cvxDwgViewLayoutInit`, `cvxDwgViewLayout` with `isIgnoreLoc/Method/Attr = 1` | `name` is a `vxPath` (256 bytes): long paths are rejected. The part must already be saved. |
+
+Every modeling method listed in `is_modeling_method()` (`plugin/src/handlers/common.cpp`) runs in one undo transaction and is rolled back on failure.
