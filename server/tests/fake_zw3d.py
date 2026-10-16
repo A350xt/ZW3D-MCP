@@ -437,7 +437,7 @@ class Fake:
     def list_edges(self, p):
         sh = self.shape(p["shape_id"])
         return {"shape_id": p["shape_id"], "count": len(sh["edges"]), "edge_ids": list(sh["edges"]),
-                "edges": [{"edge_id": e} for e in sh["edges"]]}
+                "edges": [{"edge_id": e, "bounding_box": self._bbox(sh)} for e in sh["edges"]]}
 
     def get_mass_props(self, p):
         sh = self.shape(p["shape_id"])

@@ -284,7 +284,8 @@ json h_shell_shape(const json& p) {
   svxShellData sh;
   check_api(cvxPartShellInit(&sh), "cvxPartShellInit");
   sh.idShape = shape;
-  sh.dThick = t;
+  // Measured on ZW3D 2025 SP2: a positive dThick grows the wall OUTWARD, so inward (default) uses a negative value.
+  sh.dThick = p.value("inward", true) ? -t : t;
   sh.cntOpenFace = (int)open.size();
   sh.pIdOpenFace = open.empty() ? nullptr : open.data();
   int id = 0;

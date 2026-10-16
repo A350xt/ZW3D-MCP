@@ -129,7 +129,21 @@ def main() -> int:
                           {"shape_id": sb["shape_id"], "thickness": 2, "open_face_ids": [tops[0]["face_id"]]})
                 if sh and sh.get("volume") is not None:
                     approx("shelled volume", sh["volume"], 60 * 40 * 30 - 56 * 36 * 28)
-        ed = step(b, "list_edges (bbox per edge)", "list_edges", {"shape_id": sb["shape_id"]})
+        ed = step(b, "list_edges (bbox + curve)", "list_edges", {"shape_id": sb["shape_id"]})
+        if ed:
+            have = sum(1 for e in ed["edges"] if "bounding_box" in e)
+            print(f"       edges with bounding_box: {have}/{ed['count']}; first: {json.dumps(ed['edges'][0], ensure_ascii=False)[:200]}")
+            failures += 0 if have == ed["count"] else 1
+    # undo granularity probe: one extrude_profile call = N curves + curve list + extrude. Does ONE undo remove the solid?
+    pr = step(b, "undo probe: create_box", "create_box", {"center": [1100, 0, 5], "size": [10, 10, 10], "combine": "none"})
+    px = step(b, "undo probe: extrude_polygon", "extrude_polygon", {"points": [[1200, 0, 0], [1210, 0, 0], [1210, 10, 0], [1200, 10, 0]],
+              "distance": 5, "start": 0, "direction": [0, 0, 1], "draft_angle": 0, "combine": "none"})
+    if px:
+        u1 = step(b, "undo probe: undo 1", "undo", {"steps": 1})
+        if u1:
+            gone = px["shape_id"] not in u1["shapes"]
+            print(f"       one undo removed the whole extrude solid: {gone}")
+            step(b, "undo probe: redo 1", "redo", {"steps": 1})
     before = step(b, "list_shapes before undo", "list_shapes")
     u = step(b, "undo 1", "undo", {"steps": 1})
     r = step(b, "redo 1", "redo", {"steps": 1})

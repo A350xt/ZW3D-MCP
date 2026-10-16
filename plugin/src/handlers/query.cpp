@@ -78,7 +78,23 @@ json h_list_edges(const json& p) {
   for (int e : edges) {
     json item = {{"edge_id", e}};
     svxBndBox box{};
-    if (cvxPartInqEntBox(e, nullptr, &box) == 0) item["bounding_box"] = bbox_json(box);
+    // cvxPartInqEntBox only supports shape/face/component; edges go through the general entity box.
+    if (cvxEntBndBox(e, &box) == 0) item["bounding_box"] = bbox_json(box);
+    svxCurve crv;
+    std::memset(&crv, 0, sizeof(crv));
+    if (cvxPartInqEdgeCrv(e, 0, &crv) == 0) {
+      switch (crv.Type) {
+        case VX_CRV_LINE: item["curve"] = {{"type", "line"}, {"start", from_point(crv.P1)}, {"end", from_point(crv.P2)}}; break;
+        case VX_CRV_ARC:
+        case VX_CRV_CIRCLE:
+          item["curve"] = {{"type", crv.Type == VX_CRV_ARC ? "arc" : "circle"},
+                           {"center", {crv.Frame.xt, crv.Frame.yt, crv.Frame.zt}},
+                           {"radius", crv.R}};
+          break;
+        default: item["curve"] = {{"type", "nurbs"}}; break;
+      }
+      cvxCurveFree(&crv);
+    }
     detail.push_back(item);
   }
   return {{"shape_id", shape}, {"count", edges.size()}, {"edge_ids", edges}, {"edges", detail}};

@@ -269,10 +269,13 @@ def chamfer_edges(shape_id: int, distance: float, edge_ids: list[int] | None = N
 
 
 @mcp.tool()
-def shell_shape(shape_id: int, thickness: float, open_face_ids: list[int] | None = None) -> dict:
+def shell_shape(shape_id: int, thickness: float, open_face_ids: list[int] | None = None,
+                inward: bool = True) -> dict:
     """Hollow out a solid with a uniform wall `thickness` (mm). open_face_ids are faces that are removed (left open),
-    e.g. the top face of a box to make an open container; get them from list_faces (planar faces report plane_normal)."""
+    e.g. the top face of a box to make an open container; get them from list_faces (planar faces report plane_normal).
+    inward=True (default) keeps the outer size and cuts the cavity inside; inward=False grows the wall outward."""
     params = {"shape_id": v.id_list([shape_id], "shape_id")[0], "thickness": v.positive(thickness, "thickness")}
+    params["inward"] = bool(inward)
     if open_face_ids:
         params["open_face_ids"] = v.id_list(open_face_ids, "open_face_ids")
     return _call("shell_shape", params)
@@ -310,8 +313,8 @@ def list_faces(shape_id: int) -> dict:
 
 @mcp.tool()
 def list_edges(shape_id: int) -> dict:
-    """List the edges of a shape: edge_ids plus `edges` with each edge's bounding box (use with fillet_edges /
-    chamfer_edges; a straight edge's box spans its two end points)."""
+    """List the edges of a shape: edge_ids plus `edges`, each with bounding_box and `curve` (line: start/end;
+    arc/circle: center/radius). Use with fillet_edges / chamfer_edges to pick edges by position."""
     return _call("list_edges", {"shape_id": v.id_list([shape_id], "shape_id")[0]})
 
 
