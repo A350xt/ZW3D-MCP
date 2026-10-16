@@ -511,7 +511,7 @@ def set_variable(name: str, value: float | None = None, expression: str | None =
     if value is not None:
         params["value"] = v.number(value, "value")
     else:
-        params["expression"] = expression
+        params["expression"] = v.check_expression(name, expression)
     return _call("set_variable", params)
 
 
@@ -531,7 +531,9 @@ def add_variable(name: str, value: float | None = None, expression: str | None =
 
 @mcp.tool()
 def list_sketch_variables(sketch_id: int) -> dict:
-    """List the driving dimensions (variables) of a sketch created by sketch_extrude/sketch_revolve (use its sketch_id)."""
+    """List the variables of a sketch created by sketch_extrude/sketch_revolve (use its sketch_id). The result also reports the
+    sketch's dimension entities (`dimensions`) and, if the dimensions are not exposed as variables, a `note` saying so; in that
+    case change the model with set_variable or edit the sketch in ZW3D."""
     return _call("list_sketch_variables", {"sketch_id": v.id_list([sketch_id], "sketch_id")[0]})
 
 

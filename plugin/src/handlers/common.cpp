@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cstring>
 #include <cmath>
 #include "handlers.h"
 #include "../encoding.h"
@@ -28,6 +29,72 @@ evxBoolType parse_combine(const json& params) {
   invalid_input("combine 取值无效: " + c, "可选: none, add, remove, intersect");
 }
 
+// ---- undo transactions -----------------------------------------------------------------------------------------
+// cvxXnUndoCount() is not reliable in a never-saved file (it lags behind the real log, so bundling "from the count"
+// merged the whole history into one step). Markers are the documented tool: cvxUndoRedoMarker flushes the log and adds a
+// uniquely named transaction. Every modeling call is bracketed by a start and an end marker, and undo/redo go through
+// cvxUndoRedoTo(start) / cvxUndoRedoTo(end), so one call is exactly one step whatever ZW3D logs inside it.
+struct TxRecord {
+  std::string start, end;
+};
+static std::vector<TxRecord> g_done, g_undone;
+static std::string g_tx_scope;
+
+static void tx_check_scope() {
+  std::string scope = current_file_utf8() + "|" + current_root_utf8();
+  if (scope != g_tx_scope) {  // another file/part became active: our marker names no longer apply
+    g_done.clear();
+    g_undone.clear();
+    g_tx_scope = scope;
+  }
+}
+
+static bool tx_marker(std::string& out) {
+  vxName name;
+  std::memset(name, 0, sizeof(name));
+  if (cvxUndoRedoMarker(name) != 0) return false;
+  out = name;
+  return true;
+}
+
+static void restore_root(const std::string& root_utf8) {
+  if (root_utf8.empty() || current_root_utf8() == root_utf8) return;
+  vxRootName r;
+  std::memset(r, 0, sizeof(r));
+  std::string a = utf8_to_ansi(root_utf8);
+  if (a.size() >= sizeof(r)) return;
+  std::memcpy(r, a.c_str(), a.size() + 1);
+  cvxRootActivate(r);  // a failed command can leave no root active; later calls would then fail with ROOT_ACT_FAIL
+}
+
+bool tx_undo_redo(bool undo, bool* used_markers) {
+  tx_check_scope();
+  *used_markers = true;
+  auto to_name = [](const std::string& s, vxName& n) { std::memset(n, 0, sizeof(n)); std::memcpy(n, s.c_str(), std::min(s.size(), sizeof(n) - 1)); };
+  if (undo && !g_done.empty()) {
+    TxRecord rec = g_done.back();
+    vxName n;
+    to_name(rec.start, n);
+    if (cvxUndoRedoTo(1, n) != 0) return false;
+    g_done.pop_back();
+    g_undone.push_back(rec);
+    return true;
+  }
+  if (!undo && !g_undone.empty()) {
+    TxRecord rec = g_undone.back();
+    vxName n;
+    to_name(rec.end, n);
+    if (cvxUndoRedoTo(0, n) != 0) return false;
+    g_undone.pop_back();
+    g_done.push_back(rec);
+    return true;
+  }
+  *used_markers = false;  // nothing of ours to undo/redo (e.g. plugin reloaded): fall back to a raw single step
+  return cvxUndoRedo(undo ? 1 : 0) == 0;
+}
+
+int tx_steps_available() { return (int)g_done.size(); }
+
 bool is_modeling_method(const std::string& m) {
   static const char* names[] = {"create_box", "create_cylinder", "create_sphere", "extrude_polygon", "revolve_polygon",
                                 "extrude_profile", "revolve_profile", "sketch_extrude", "sketch_revolve", "boolean",
@@ -38,22 +105,31 @@ bool is_modeling_method(const std::string& m) {
   return false;
 }
 
-static void rollback_to(int base) {
-  for (int guard = 0; guard < 2000 && cvxXnUndoCount() > base; ++guard)
-    if (cvxUndoRedo(1) != 0) break;
-}
-
 json invoke_handler(const std::string& method, Handler h, const json& params) {
   if (!is_modeling_method(method)) return h(params);
-  int base = cvxXnUndoCount();
+  tx_check_scope();
+  std::string root = current_root_utf8();
+  std::string start;
+  bool marked = tx_marker(start);
   json out;
   try {
     out = h(params);
   } catch (...) {
-    rollback_to(base);  // undo everything this call created (curves, sketches, partial features)
+    if (marked) {
+      vxName n;
+      std::memset(n, 0, sizeof(n));
+      std::memcpy(n, start.c_str(), std::min(start.size(), sizeof(n) - 1));
+      cvxUndoRedoTo(1, n);  // undo everything this call created (curves, sketches, partial features)
+    }
+    restore_root(root);
     throw;
   }
-  if (cvxXnUndoCount() > base + 1) cvxXnBundle(base, method.c_str());  // one tool call == one undo step
+  restore_root(root);
+  std::string end;
+  if (marked && tx_marker(end)) {
+    g_done.push_back({start, end});
+    g_undone.clear();  // a new operation invalidates the redo history
+  }
   return out;
 }
 

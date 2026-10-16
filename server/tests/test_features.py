@@ -212,3 +212,25 @@ def test_all_tools_exposed_with_descriptions(fake):
                  "new_assembly", "insert_component", "list_components", "new_drawing", "list_features"):
         assert want in names, want
     assert all((t.get("description") or "").strip() for t in tools), "every tool needs a description"
+
+
+def test_self_referencing_expression_is_rejected_client_side(part):
+    server.add_variable("W", 5, kind="distance")
+    with pytest.raises(ZW3DError) as e:
+        server.set_variable("W", expression="W*2")
+    assert e.value.code == "INVALID_INPUT" and "circular" in e.value.message
+    assert server.set_variable("W", expression="W2*2")["variable"]["expression"] == "W2*2"   # W2 is a different name
+    assert server.set_variable("W", expression="my_W+1")["variable"]["expression"] == "my_W+1"
+    with pytest.raises(ZW3DError):
+        server.set_variable("W", expression="  ")
+
+
+def test_state_stays_usable_after_a_failed_call(part):
+    """After an error the next modeling calls must work (regression for ROOT_ACT_FAIL after a failed set_variable)."""
+    server.add_variable("W", 5, kind="distance")
+    with pytest.raises(ZW3DError):
+        server.set_variable("nope", 1)
+    a = server.create_box(corner1=[0, 0, 0], corner2=[10, 10, 10])
+    b = server.create_box(corner1=[5, 5, 5], corner2=[15, 15, 15])
+    r = server.boolean("add", a["shape_id"], [b["shape_id"]])
+    assert r["volume"] > 1000

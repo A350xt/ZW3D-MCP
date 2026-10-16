@@ -136,8 +136,11 @@ json h_undo_redo(const json& p, bool undo) {
   if (steps < 1 || steps > 50) invalid_input("steps 必须在 1..50 之间");
   std::vector<int> before = inq_shape_ids();
   int done = 0;
+  bool fallback = false;
   for (; done < steps; ++done) {
-    if (cvxUndoRedo(undo ? 1 : 0) != 0) break;
+    bool markers = true;
+    if (!tx_undo_redo(undo, &markers)) break;
+    fallback = fallback || !markers;
   }
   if (done == 0) throw ApiError("NOTHING_TO_DO", undo ? "没有可撤销的操作" : "没有可重做的操作", "");
   std::vector<int> after = inq_shape_ids();
@@ -145,8 +148,9 @@ json h_undo_redo(const json& p, bool undo) {
   for (int s : before) if (std::find(after.begin(), after.end(), s) == after.end()) removed.push_back(s);
   for (int s : after) if (std::find(before.begin(), before.end(), s) == before.end()) added.push_back(s);
   json out = {{"steps_done", done}, {"shapes", after}, {"removed_shape_ids", removed}, {"added_shape_ids", added},
-              {"undo_steps_available", cvxXnUndoCount()}};
-  if (removed.empty() && added.empty())
+              {"undo_steps_available", tx_steps_available()}};
+  if (fallback) out["note"] = "部分步骤不是由本插件记录的，按单个底层步骤撤销/重做，可能一次只影响一个图元。";
+  if (removed.empty() && added.empty() && !out.contains("note"))
     out["note"] = "撤销/重做的步骤没有改变任何实体（可能只涉及线框、草图或特征参数）；用 list_shapes 核对。";
   return out;
 }

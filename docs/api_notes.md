@@ -132,3 +132,25 @@ and whether PNG honours Width/Height.
 | drawing | `cvxFileNewSingle(VX_FILE_SHEET)`, `cvxDwgViewLayoutInit`, `cvxDwgViewLayout` with `isIgnoreLoc/Method/Attr = 1` | `name` is a `vxPath` (256 bytes): long paths are rejected. The part must already be saved. |
 
 Every modeling method listed in `is_modeling_method()` (`plugin/src/handlers/common.cpp`) runs in one undo transaction and is rolled back on failure.
+
+## Live findings after batch 4 (ZW3D 2025 SP2) and the rework
+
+1. **`cvxPartPlaneNew(VX_PLANE_THREE_POINTS)` always failed (-152)** -> `mirror` could not create its datum plane. Rework: try, in order,
+   the standard XY/XZ/YZ method with an offset (axis-aligned planes), `cvxPartPlaneAdd` with `VX_NEW_PLANE_DYNAMIC`,
+   `cvxPartPlaneAdd` with `VX_NEW_PLANE_THREE_POINTS`, then the original; the error hint lists every attempt and its code.
+2. **`cvxCompIns` failed (-152)** with the full path in `svxCompData.File`. Rework: `Dir` and `File` are separate ("Dir contains File");
+   variants tried in order: dir + file name, dir + stem, file name only, full path in File. `Frame` is now a complete matrix (identity rotation
+   + translation; the old zeroed rotation with `identity` unchanged was an invalid frame). Error hint lists the attempts. `part_name` (root name) defaults to the file stem.
+3. **`cvxXnUndoCount()` is unreliable in a never-saved file** (it lags behind the real log, so `cvxXnBundle(base, ...)` merged the whole history:
+   one undo emptied the part; after a save counts were right). Rework: `cvxUndoRedoMarker` (documented to flush the log) brackets every modeling
+   call with a start and an end marker; `undo` = `cvxUndoRedoTo(1, start)`, `redo` = `cvxUndoRedoTo(0, end)`; failures roll back with
+   `cvxUndoRedoTo(1, start)`. The plugin keeps its own stack (cleared when the active file/root changes); with an empty stack it falls back to one raw
+   `cvxUndoRedo` step and says so in `note`. Edits made by hand in ZW3D between tool calls are undone together with the next tool call's step.
+4. **Failed `set_variable` left ZW3D without an active root** (following calls: ROOT_ACT_FAIL / WRONG_ROOT_ENV) and returned a misleading
+   VARIABLE_NOT_FOUND. Rework: existence is checked against `cvxPartInqVars`; the active root is restored (`cvxRootActivate`) after every modeling call,
+   also after failures; a self-referencing expression (`W` = `W*2`) is rejected client-side as a circular reference.
+5. **`cvxSkInqVars` returns nothing for the dimensions that `cvxSkAddConsDim` creates.** `list_sketch_variables` now also reports the sketch's
+   dimension entities (`cvxSkInqDim`, type) and probes `D1..Dn` with `cvxSkVarGet`; if nothing is found it says so. Open: how a sketch dimension value is
+   edited through the API. The header `cvxRootVarSet` documents that fields of history operations are addressed as variables named
+   `<operation_name:field_number>`; the vendor example `15.EditVariable` uses `cvxPartInqFtrData` / `cvxDataGet` / `cvxDataSet` for this. A tool built on
+   that (edit a feature's variables by name) is the likely way to resize features after the fact.

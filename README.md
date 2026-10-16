@@ -59,7 +59,7 @@ against the fake plugin, **not yet run in ZW3D** (see `docs/api_notes.md`).
 | `export_step` | Export the active file as STEP | `path` | ✅ |
 | `screenshot` | PNG of the current view returned as an image (temp file is deleted) | `width, height, zoom_all` | ✅ |
 | `run_command` | Raw ZW3D command string (off unless `ZW3D_MCP_ENABLE_RUN_COMMAND=1`) | `command` | ✅ (disabled path) |
-| `undo` / `redo` | Undo/redo whole tool calls; reports removed/added shapes | `steps` | ✅ basic, ⚠️ per-call atomicity |
+| `undo` / `redo` | Undo/redo whole tool calls (marker based); reports removed/added shapes | `steps` | ⚠️ reworked after a live bug (unsaved parts) |
 
 **Primitives**
 
@@ -94,7 +94,7 @@ against the fake plugin, **not yet run in ZW3D** (see `docs/api_notes.md`).
 | `draft_faces` | Draft (taper) faces about neutral faces | `face_ids, neutral_face_ids, angle, pull_direction` | ⚠️ |
 | `pattern_linear` | Linear / grid pattern of a solid or features | `count, spacing, direction, shape_id` or `feature_ids, count2…` | ⚠️ |
 | `pattern_circular` | Circular pattern of a solid or features | `count, axis_point, axis_direction, angle?` | ⚠️ |
-| `mirror` | Mirror a solid or features across a plane | `plane, shape_id` or `feature_ids, combine` | ⚠️ |
+| `mirror` | Mirror a solid or features across a plane | `plane, shape_id` or `feature_ids, combine` | ⚠️ failed live (datum plane), reworked |
 
 **Queries**
 
@@ -112,14 +112,14 @@ against the fake plugin, **not yet run in ZW3D** (see `docs/api_notes.md`).
 | Tool | What it does | Main parameters | Status |
 |---|---|---|---|
 | `list_variables` / `add_variable` / `set_variable` | Part variables (distance, angle, number or expression); set regenerates the part | `name, value` or `expression, kind` | ⚠️ |
-| `list_sketch_variables` / `set_sketch_variable` | Edit a sketch's driving dimensions and regenerate | `sketch_id, name, value` | ⚠️ |
+| `list_sketch_variables` / `set_sketch_variable` | Sketch variables + dimension diagnostics; edit a variable and regenerate | `sketch_id, name, value` | ⚠️ dimensions are not exposed as variables (open) |
 
 **Assemblies and drawings** (basic)
 
 | Tool | What it does | Main parameters | Status |
 |---|---|---|---|
 | `new_assembly` | New assembly file (`.Z3ASM`) | `name` | ⚠️ |
-| `insert_component` | Insert a saved part into the active assembly | `file, position, anchor` | ⚠️ |
+| `insert_component` | Insert a saved part into the active assembly | `file, position, anchor` | ⚠️ failed live, reworked |
 | `list_components` | Component ids of the active assembly | – | ⚠️ |
 | `new_drawing` | New drawing with the standard view layout of a saved part | `name, part_file` | ⚠️ |
 

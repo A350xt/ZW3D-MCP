@@ -42,6 +42,8 @@ json creation_result(evxBoolType combine, int id);
 // cvxXnBundle) and are rolled back completely if they fail, so no stray profile curves / half-built sketches stay behind.
 json invoke_handler(const std::string& method, Handler h, const json& params);
 bool is_modeling_method(const std::string& method);
+bool tx_undo_redo(bool undo, bool* used_markers);   // one tool call per step (markers); falls back to a raw step
+int tx_steps_available();
 void cleanup_screenshots(int older_than_s);   // file.cpp; -1 = delete all and remove the folder
 std::string current_file_utf8();
 std::string current_root_utf8();

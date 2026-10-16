@@ -282,6 +282,24 @@ def main() -> int:
     sv = step(b, "set_variable mcp_wall = 3", "set_variable", {"name": "mcp_wall", "value": 3})
     if sv:
         print(f"       variable now: {sv['variable']}")
+    # regression checks for the problems found in live use: undo after set_variable, state after a failed set_variable
+    if sv:
+        n_before = len(step(b, "list_shapes (before undo of set_variable)", "list_shapes")["shapes"])
+        u = step(b, "undo the set_variable (must not empty the part)", "undo", {"steps": 1})
+        if u:
+            n_after = len(u["shapes"])
+            ok = n_after == n_before
+            print(f"       shapes before/after undo: {n_before}/{n_after}  part intact: {ok}")
+            failures += 0 if ok else 1
+            step(b, "redo", "redo", {"steps": 1})
+    try:  # self-referencing expression, sent raw to bypass the client-side check
+        b.call("set_variable", {"name": "mcp_wall", "expression": "mcp_wall*2"})
+        print("       (ZW3D accepted the circular expression)")
+    except ZW3DError as e:
+        print(f"       circular expression rejected by ZW3D: [{e.code}] {e.message[:70]}")
+    ok1 = step(b, "box right after the failed set_variable", "create_box", {"center": [6000, 0, 5], "size": [10, 10, 10], "combine": "none"})
+    if ok1:
+        step(b, "boolean right after (state must be healthy)", "create_box", {"center": [6005, 0, 5], "size": [10, 10, 10], "combine": "none"})
     sc = step(b, "sketch circle r10 d=10 (for dimension edit)", "sketch_extrude", {
         "plane": {"origin": [4600, 0, 0], "x_axis": [1, 0, 0], "y_axis": [0, 1, 0]},
         "segments": [{"type": "circle", "center": [0, 0], "radius": 10}], "distance": 10, "start": 0,

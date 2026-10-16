@@ -290,3 +290,14 @@ def number(value, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         raise bad(f"{name} must be a finite number, got {value!r}")
     return float(value)
+
+
+def check_expression(name: str, expression: str) -> str:
+    """Reject empty expressions and expressions that mention the variable being defined (a circular reference)."""
+    import re
+    if not isinstance(expression, str) or not expression.strip():
+        raise bad("expression must be a non-empty string")
+    if re.search(r"(?<![A-Za-z0-9_])" + re.escape(name) + r"(?![A-Za-z0-9_])", expression):
+        raise bad(f"expression {expression!r} refers to the variable {name!r} itself (circular reference)",
+                  "Use a literal value, or reference a different variable.")
+    return expression

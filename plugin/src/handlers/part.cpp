@@ -433,7 +433,8 @@ json shapes_summary() {
   return {{"shapes", ids}, {"shape_details", details}};
 }
 
-// Datum plane through `origin` with the given normal (three free points define it).
+// Datum plane through `origin` with the given normal. cvxPartPlaneNew(THREE_POINTS) failed on a real ZW3D (-152) for every
+// plane, so several creation routes are tried in order and the first that works is used.
 int make_datum_plane(const json& plane) {
   svxPoint o = to_point(plane.at("origin"), "plane.origin");
   svxVector n = to_vector(plane.at("normal"), "plane.normal");
@@ -445,15 +446,66 @@ int make_datum_plane(const json& plane) {
   double ul = std::sqrt(u.x * u.x + u.y * u.y + u.z * u.z);
   u = {u.x / ul, u.y / ul, u.z / ul};
   svxVector v{n.y * u.z - n.z * u.y, n.z * u.x - n.x * u.z, n.x * u.y - n.y * u.x};
-  svxPlaneData pd;
-  std::memset(&pd, 0, sizeof(pd));
-  pd.method = VX_PLANE_THREE_POINTS;
-  pd.inpUnion.threePnts.OrgPnt = o;
-  pd.inpUnion.threePnts.XPnt = {o.x + u.x * 10, o.y + u.y * 10, o.z + u.z * 10};
-  pd.inpUnion.threePnts.YPnt = {o.x + v.x * 10, o.y + v.y * 10, o.z + v.z * 10};
-  int id = 0;
-  check_api(cvxPartPlaneNew(&pd, &id), "cvxPartPlaneNew");
-  return id;
+  int id = 0, last_err = 0;
+  std::string tried;
+  auto attempt = [&](const char* what, int err) {
+    if (err == 0 && id > 0) return true;
+    last_err = err ? err : ZW_API_GET_NEW_OBJ_FAIL;
+    tried += std::string(what) + "(" + std::to_string(err) + ") ";
+    id = 0;
+    return false;
+  };
+
+  // 1) standard XY / XZ / YZ datum plane with an offset (axis-aligned requests)
+  double av[3] = {std::fabs(n.x), std::fabs(n.y), std::fabs(n.z)};
+  for (int k = 0; k < 3; ++k) {
+    if (av[k] > 1 - 1e-9) {
+      svxPlaneData pd;
+      std::memset(&pd, 0, sizeof(pd));
+      pd.method = k == 2 ? VX_PLANE_XY : k == 1 ? VX_PLANE_XZ : VX_PLANE_YZ;  // normals: Z, Y, X
+      pd.inpUnion.xyz.Offset = k == 0 ? o.x : k == 1 ? o.y : o.z;
+      if (attempt("standard-plane", cvxPartPlaneNew(&pd, &id))) return id;
+    }
+  }
+  // 2) dynamic plane (position + explicit axes)
+  {
+    svxNewPlaneData nd;
+    if (cvxPartPlaneAddInit(VX_NEW_PLANE_DYNAMIC, &nd) == 0) {
+      nd.inpUnion.dynamic.posPnt = o;
+      nd.inpUnion.dynamic.xAxis = u;
+      nd.inpUnion.dynamic.yAxis = v;
+      nd.inpUnion.dynamic.zAxis = n;
+      nd.inpUnion.dynamic.autoOrient = 0;
+      if (attempt("dynamic", cvxPartPlaneAdd(&nd, &id))) return id;
+    }
+  }
+  // 3) three points through the newer command template
+  {
+    svxNewPlaneData nd;
+    if (cvxPartPlaneAddInit(VX_NEW_PLANE_THREE_POINTS, &nd) == 0) {
+      nd.inpUnion.threePnts.orgPnt = o;
+      nd.inpUnion.threePnts.xPnt = {o.x + u.x * 10, o.y + u.y * 10, o.z + u.z * 10};
+      nd.inpUnion.threePnts.yPnt = {o.x + v.x * 10, o.y + v.y * 10, o.z + v.z * 10};
+      if (attempt("three-points-add", cvxPartPlaneAdd(&nd, &id))) return id;
+    }
+  }
+  // 4) the original route
+  {
+    svxPlaneData pd;
+    std::memset(&pd, 0, sizeof(pd));
+    pd.method = VX_PLANE_THREE_POINTS;
+    pd.inpUnion.threePnts.OrgPnt = o;
+    pd.inpUnion.threePnts.XPnt = {o.x + u.x * 10, o.y + u.y * 10, o.z + u.z * 10};
+    pd.inpUnion.threePnts.YPnt = {o.x + v.x * 10, o.y + v.y * 10, o.z + v.z * 10};
+    if (attempt("three-points-new", cvxPartPlaneNew(&pd, &id))) return id;
+  }
+  try {
+    check_api(last_err, "创建镜像基准面");
+  } catch (ApiError& e) {
+    e.hint = "已尝试的创建方式及错误码: " + tried + "。可先在中望3D里手动建一个基准面，或改用 create_* 重新建出对称的几何。原提示: " + e.hint;
+    throw;
+  }
+  return 0;
 }
 
 // Curve list from 3D segments; also reports the first curve id (loft/sweep reference "a curve + its parent list").
