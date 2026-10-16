@@ -186,6 +186,137 @@ json h_set_sketch_variable(const json& p) {
   return out;
 }
 
+// ---- feature parameters ----------------------------------------------------------------------------------------
+// Follows the vendor example 15.EditVariable: cvxPartInqFtrData -> cvxDataGetAll lists the fields of a history operation.
+// cvxRootVarSet's header documents that a field of an operation's input data is addressed as a variable named
+// "<operation_name:field_number>" (brackets included), so editing a literal feature value = setting that variable.
+std::string entity_name(int id) {
+  char buf[256] = {0};
+  cvxEntName(id, buf, sizeof(buf));
+  return ansi_to_utf8(buf);
+}
+
+std::string field_variable_name(const std::string& op_name, int field_id) {
+  return "<" + op_name + ":" + std::to_string(field_id) + ">";
+}
+
+json h_list_features(const json&) {
+  int n = 0;
+  int* ids = nullptr;
+  check_api(cvxPartInqFtrList(&n, &ids), "cvxPartInqFtrList");
+  std::vector<int> v(ids, ids + n);
+  if (ids) cvxMemFree(reinterpret_cast<void**>(&ids));
+  json list = json::array();
+  for (int id : v) {
+    json item = {{"feature_id", id}, {"name", entity_name(id)}};
+    vxName tpl;
+    std::memset(tpl, 0, sizeof(tpl));
+    if (cvxPartInqFtrTemplate(id, tpl) == 0) item["template"] = ansi_to_utf8(tpl);
+    list.push_back(item);
+  }
+  return {{"count", v.size()}, {"feature_ids", v}, {"features", list}};
+}
+
+// Reads the field list of a feature. Returns the data container id (caller frees with cvxDataFree) and fills `fields`.
+struct FeatureFields {
+  int idData = -1;
+  int count = 0;
+  svxFldData* list = nullptr;
+  ~FeatureFields() {
+    if (list) cvxFldDataFree(count, &list);
+    if (idData > 0) cvxDataFree(idData);
+  }
+};
+
+void load_feature(int fid, FeatureFields& ff) {
+  int r = cvxPartInqFtrData(fid, 0, &ff.idData);  // evaluated data first
+  if (r != 0 || ff.idData < 0) {
+    ff.idData = -1;
+    r = cvxPartInqFtrData(fid, 1, &ff.idData);     // fall back to the last evaluated numbers (entity fields unavailable)
+  }
+  if (r != 0 || ff.idData < 0) throw ApiError("FEATURE_DATA_UNAVAILABLE", "该特征没有可读取的参数数据", "用 list_features 确认 feature_id；基准面/草图等特征没有参数。", r);
+  check_api(cvxDataGetAll(ff.idData, &ff.count, &ff.list), "cvxDataGetAll");
+}
+
+json h_get_feature_data(const json& p) {
+  int fid = p.at("feature_id").get<int>();
+  std::string op = entity_name(fid);
+  FeatureFields ff;
+  load_feature(fid, ff);
+  json fields = json::array();
+  for (int i = 0; i < ff.count; ++i) {
+    const svxFldData& f = ff.list[i];
+    json item = {{"field_id", f.fld_id}, {"label", ansi_to_utf8(f.fld_name)}};
+    const svxData* d = f.count > 0 ? f.fld_data : nullptr;
+    switch (f.fld_type) {
+      case VX_FLD_NUM: case VX_FLD_DST: case VX_FLD_ANG:
+        item["type"] = f.fld_type == VX_FLD_NUM ? "number" : f.fld_type == VX_FLD_DST ? "distance_mm" : "angle_deg";
+        if (d) {
+          item["value"] = f.fld_type == VX_FLD_ANG ? d->Num * 180.0 / 3.14159265358979323846 : d->Num;  // fields hold radians
+          if (d->isText && d->Text[0]) item["expression"] = ansi_to_utf8(d->Text);  // a referenced variable / expression
+        }
+        item["variable_name"] = field_variable_name(op, f.fld_id);  // usable with set_variable, or set_feature_value
+        item["editable"] = true;
+        break;
+      case VX_FLD_PNT:
+        item["type"] = "point";
+        if (d) item["value"] = from_point(d->Pnt);
+        break;
+      case VX_FLD_ENT:
+        item["type"] = "entity";
+        if (d) item["entity_id"] = d->idEntity;
+        break;
+      case VX_FLD_TXT:
+        item["type"] = "text";
+        if (d) item["value"] = ansi_to_utf8(d->Text);
+        break;
+      default:
+        continue;  // containers and nulls carry nothing to show
+    }
+    fields.push_back(item);
+  }
+  return {{"feature_id", fid}, {"name", op}, {"fields", fields}};
+}
+
+json h_set_feature_value(const json& p) {
+  int fid = p.at("feature_id").get<int>();
+  int field = p.at("field_id").get<int>();
+  double value = p.at("value").get<double>();
+  std::string op = entity_name(fid);
+  // Find the field first, so the error is specific (unknown field / not numeric) instead of a generic API failure.
+  evxFldType type = VX_FLD_NULL;
+  {
+    FeatureFields ff;
+    load_feature(fid, ff);
+    bool found = false;
+    for (int i = 0; i < ff.count && !found; ++i)
+      if (ff.list[i].fld_id == field) { found = true; type = ff.list[i].fld_type; }
+    if (!found)
+      throw ApiError("FIELD_NOT_FOUND", "特征 " + op + " 没有字段 " + std::to_string(field), "先调用 get_feature_data 查看 field_id。");
+    if (type != VX_FLD_NUM && type != VX_FLD_DST && type != VX_FLD_ANG)
+      throw ApiError("FIELD_NOT_NUMERIC", "字段 " + std::to_string(field) + " 不是数值字段", "只能修改数字、距离、角度字段。");
+  }
+  svxVariable v;
+  std::memset(&v, 0, sizeof(v));
+  set_name(v.Name, field_variable_name(op, field), "variable name");
+  v.type = VX_VAR_NUM;
+  v.sub_type = type == VX_FLD_DST ? VX_VAR_DST : type == VX_FLD_ANG ? VX_VAR_ANG : VX_VAR_CONS;
+  v.unit_type = type == VX_FLD_DST ? VX_UNIT_MILLIMETER : type == VX_FLD_ANG ? VX_UNIT_DEG : 0;
+  v.Value = value;  // database units: mm / degrees
+  DispGuard guard;
+  try {
+    check_api(cvxPartVarSet(1, &v, 0), "cvxPartVarSet");  // regenerates the part
+  } catch (ApiError& e) {
+    e.hint = "按 " + field_variable_name(op, field) + " 设置特征字段失败：值可能使几何无效（已回滚，模型保持原状），或该字段不能这样修改。原提示: " + e.hint;
+    throw;
+  }
+  json out = {{"feature_id", fid}, {"field_id", field}, {"value", value}, {"shapes", inq_shape_ids()}};
+  json details = json::array();
+  for (int s : out["shapes"].get<std::vector<int>>()) details.push_back(describe_shape(s));
+  out["shape_details"] = details;
+  return out;
+}
+
 // ---- assemblies -------------------------------------------------------------------------------------------------
 json h_new_assembly(const json& p) {
   char file[512];
@@ -284,6 +415,9 @@ json h_new_drawing(const json& p) {
 }  // namespace
 
 void register_misc_handlers(std::map<std::string, Handler>& m) {
+  m["list_features"] = h_list_features;  // replaces the plain id list registered by part.cpp
+  m["get_feature_data"] = h_get_feature_data;
+  m["set_feature_value"] = h_set_feature_value;
   m["list_variables"] = h_list_variables;
   m["set_variable"] = h_set_variable;
   m["add_variable"] = h_add_variable;

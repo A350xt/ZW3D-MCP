@@ -103,7 +103,7 @@ against the fake plugin, **not yet run in ZW3D** (see `docs/api_notes.md`).
 | `list_shapes` | All solids with bbox, volume, area | – | ✅ |
 | `list_faces` | Faces with bbox, surface type, plane normal / cylinder radius+axis | `shape_id` | ✅ |
 | `list_edges` | Edges with exact bbox and curve (line ends / arc centre+radius) | `shape_id` | ✅ / ⚠️ exact boxes |
-| `list_features` | Feature ids of the history | – | ⚠️ |
+| `list_features` | History features with id, name and template | – | ⚠️ |
 | `get_bounding_box` | Bounding box of a solid | `shape_id` | ✅ |
 | `get_mass_props` | Volume, area, `mass_kg`, centre of gravity | `shape_id, density?` | ✅ |
 
@@ -113,6 +113,8 @@ against the fake plugin, **not yet run in ZW3D** (see `docs/api_notes.md`).
 |---|---|---|---|
 | `list_variables` / `add_variable` / `set_variable` | Part variables (distance, angle, number or expression); set regenerates the part | `name, value` or `expression, kind` | ⚠️ |
 | `list_sketch_variables` / `set_sketch_variable` | Sketch variables + dimension diagnostics; edit a variable and regenerate | `sketch_id, name, value` | ⚠️ dimensions are not exposed as variables (open) |
+| `get_feature_data` | Fields of one feature: id, label, type, value, `variable_name` | `feature_id` | ⚠️ |
+| `set_feature_value` | Change a numeric parameter of an existing feature and regenerate (resize after creation) | `feature_id, field_id, value` | ⚠️ |
 
 **Assemblies and drawings** (basic)
 

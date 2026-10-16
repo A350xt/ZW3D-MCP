@@ -234,3 +234,58 @@ def test_state_stays_usable_after_a_failed_call(part):
     b = server.create_box(corner1=[5, 5, 5], corner2=[15, 15, 15])
     r = server.boolean("add", a["shape_id"], [b["shape_id"]])
     assert r["volume"] > 1000
+
+
+# ------------------------------------------------------------------ feature parameters by field
+def test_list_features_has_names(part):
+    server.extrude_polygon([[0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0]], 5, direction=[0, 0, 1])
+    r = server.list_features()
+    assert r["count"] == 1 and r["features"][0]["name"].startswith("Extrude") and r["features"][0]["feature_id"] in r["feature_ids"]
+
+
+def test_resize_an_extrusion_after_creation(part):
+    r = server.extrude_polygon([[0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0]], 5, direction=[0, 0, 1])
+    assert approx(r["volume"], 500)
+    fid = server.list_features()["features"][0]["feature_id"]
+    data = server.get_feature_data(fid)
+    end = [f for f in data["fields"] if f["label"] == "End"][0]
+    assert end["value"] == 5 and end["variable_name"] == f"<{data['name']}:{end['field_id']}>"
+    out = server.set_feature_value(fid, end["field_id"], 20)
+    assert approx(out["shape_details"][0]["volume"], 2000)
+    assert server.get_feature_data(fid)["fields"][1]["value"] == 20          # the new value is read back
+    with pytest.raises(ZW3DError) as e:                                       # End <= Start must fail and change nothing
+        server.set_feature_value(fid, end["field_id"], -1)
+    assert e.value.code == "CMMD_EXEC_ERROR"
+    assert approx(server.list_shapes()["shapes"][0]["volume"], 2000)
+
+
+def test_resize_a_hole_diameter(part):
+    sid, top, _ = _plate(part)
+    h = server.create_hole(top, [[50, 30, 20]], 10, through=True)
+    out = server.set_feature_value(h["feature_id"], 1, 20)
+    assert approx(out["shape_details"][0]["volume"], 120000 - math.pi * 100 * 20)
+
+
+def test_feature_value_errors(part):
+    server.extrude_polygon([[0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0]], 5, direction=[0, 0, 1])
+    fid = server.list_features()["feature_ids"][0]
+    with pytest.raises(ZW3DError) as e:
+        server.set_feature_value(fid, 99, 1)
+    assert e.value.code == "FIELD_NOT_FOUND" and e.value.api_code is None
+    with pytest.raises(ZW3DError) as e:
+        server.get_feature_data(424242)
+    assert e.value.code == "FEATURE_DATA_UNAVAILABLE"
+    for bad in (dict(field_id=-1, value=1), dict(field_id=True, value=1), dict(field_id=1, value=float("nan"))):
+        with pytest.raises(ZW3DError) as e:
+            server.set_feature_value(fid, **bad)
+        assert e.value.code == "INVALID_INPUT"
+    with pytest.raises(ZW3DError):
+        server.get_feature_data(0)
+
+
+def test_feature_edit_is_one_undo_step(part):
+    server.extrude_polygon([[0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0]], 5, direction=[0, 0, 1])
+    fid = server.list_features()["feature_ids"][0]
+    server.set_feature_value(fid, 2, 20)
+    server.undo()
+    assert approx(server.list_shapes()["shapes"][0]["volume"], 500)

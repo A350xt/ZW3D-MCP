@@ -83,6 +83,7 @@ class State:
         self.faces: dict[int, tuple[int, dict]] = {}
         self.edges: dict[int, tuple[int, float]] = {}
         self.features: list[int] = []
+        self.ftr_info: dict[int, dict] = {}       # feature id -> {"name","template","fields":{id:{label,type,value}},"shape",...}
         self.hole_effects: dict[int, dict] = {}   # feature id -> {"shape": id, "removed": mm^3}
         self.vars: dict[str, dict] = {}
         self.sketch_vars: dict[int, dict] = {}    # sketch id -> {"shape": id|None, "vars": {name: {"value":v,"kind":k}}}
@@ -115,6 +116,7 @@ class Fake:
             "create_hole": self.create_hole, "pattern_shape": self.pattern_shape, "pattern_feature": self.pattern_feature,
             "mirror_shape": self.mirror_shape, "mirror_feature": self.mirror_feature, "draft_faces": self.draft_faces,
             "sweep": self.sweep, "loft": self.loft, "list_features": self.list_features,
+            "get_feature_data": self.get_feature_data, "set_feature_value": self.set_feature_value,
             "list_variables": self.list_variables, "set_variable": self.set_variable, "add_variable": self.add_variable,
             "list_sketch_variables": self.list_sketch_variables, "set_sketch_variable": self.set_sketch_variable,
             "new_assembly": self.new_assembly, "insert_component": self.insert_component,
@@ -123,7 +125,7 @@ class Fake:
         self.mutating = {"create_box", "create_cylinder", "create_sphere", "extrude_polygon", "revolve_polygon",
                          "extrude_profile", "revolve_profile", "sketch_extrude", "sketch_revolve", "boolean",
                          "create_hole", "pattern_shape", "pattern_feature", "mirror_shape", "mirror_feature",
-                         "draft_faces", "sweep", "loft", "set_variable", "add_variable", "set_sketch_variable", "fillet_edges", "chamfer_edges",
+                         "draft_faces", "sweep", "loft", "set_variable", "add_variable", "set_sketch_variable", "set_feature_value", "fillet_edges", "chamfer_edges",
                          "shell_shape"}
         self.undo_stack: list = []
         self.redo_stack: list = []
@@ -278,7 +280,12 @@ class Fake:
         bb = {"min": [min(q[i] for q in allp) for i in range(3)], "max": [max(q[i] for q in allp) for i in range(3)]}
         per = sum(_len(_sub(pts[i], pts[(i+1) % len(pts)])) for i in range(len(pts)))
         edges = [_len(_sub(pts[i], pts[(i+1) % len(pts)])) for i in range(len(pts))] * 2 + [s1 - s0] * len(pts)
-        return self.add_shape("extrude", bb, vol, 2*area + per*(s1 - s0), edges, [bb]*(len(pts)+2), p.get("combine", "none"))
+        res = self.add_shape("extrude", bb, vol, 2*area + per*(s1 - s0), edges, [bb]*(len(pts)+2), p.get("combine", "none"))
+        if res.get("shape_id"):
+            self._feature("Extrude", "FtAllExt", {1: {"label": "Start", "type": "distance_mm", "value": s0},
+                                                  2: {"label": "End", "type": "distance_mm", "value": s1}},
+                          shape=res["shape_id"], per_depth=vol / (s1 - s0))
+        return res
 
     def revolve_polygon(self, p):
         self.need_part()
@@ -422,9 +429,11 @@ class Fake:
     def _summary(self):
         return {"shapes": sorted(self.s.shapes), "shape_details": [self.describe(i) for i in sorted(self.s.shapes)]}
 
-    def _feature(self):
+    def _feature(self, name=None, template=None, fields=None, **extra):
         fid = self.s.nid()
         self.s.features.append(fid)
+        n = sum(1 for i in self.s.ftr_info.values() if i["name"].startswith(name or "Feature")) + 1 if name else len(self.s.features)
+        self.s.ftr_info[fid] = {"name": f"{name or 'Feature'}{n}", "template": template or "FtAll", "fields": fields or {}, **extra}
         return fid
 
     def create_hole(self, p):
@@ -446,7 +455,8 @@ class Fake:
                     raise ApiError("CMMD_EXEC_ERROR", "Hole location is outside the face", "Pick points on the face.", -152)
         removed = len(p["points"]) * math.pi * r * r * length
         self.s.shapes[sid]["volume"] = max(self.s.shapes[sid]["volume"] - removed, 0.0)
-        feat = self._feature()
+        feat = self._feature("Hole", "FtAllHole", {1: {"label": "Diameter", "type": "distance_mm", "value": p["diameter"]}},
+                             shape=sid, points=len(p["points"]), length=length)
         self.s.hole_effects[feat] = {"shape": sid, "removed": removed}
         return {**self._summary(), "feature_id": feat}
 
@@ -594,7 +604,44 @@ class Fake:
 
     def list_features(self, p):
         self.need_part()
-        return {"count": len(self.s.features), "feature_ids": list(self.s.features)}
+        return {"count": len(self.s.features), "feature_ids": list(self.s.features),
+                "features": [{"feature_id": f, "name": self.s.ftr_info.get(f, {}).get("name", f"Feature{f}"),
+                              "template": self.s.ftr_info.get(f, {}).get("template", "")} for f in self.s.features]}
+
+    def get_feature_data(self, p):
+        self.need_part()
+        info = self.s.ftr_info.get(p["feature_id"])
+        if info is None or not info["fields"]:
+            raise ApiError("FEATURE_DATA_UNAVAILABLE", "No readable parameters for this feature", "Check list_features.", -1)
+        fields = [{"field_id": k, "label": v["label"], "type": v["type"], "value": v["value"],
+                   "variable_name": f"<{info['name']}:{k}>", "editable": True} for k, v in info["fields"].items()]
+        return {"feature_id": p["feature_id"], "name": info["name"], "fields": fields}
+
+    def set_feature_value(self, p):
+        self.need_part()
+        info = self.s.ftr_info.get(p["feature_id"])
+        if info is None or not info["fields"]:
+            raise ApiError("FEATURE_DATA_UNAVAILABLE", "No readable parameters for this feature", "Check list_features.", -1)
+        fld = info["fields"].get(p["field_id"])
+        if fld is None:
+            raise ApiError("FIELD_NOT_FOUND", f"{info['name']} has no field {p['field_id']}", "Call get_feature_data.", None)
+        new = p["value"]
+        sh = self.s.shapes.get(info.get("shape"))
+        if info["template"] == "FtAllExt" and sh is not None:
+            start = new if fld["label"] == "Start" else info["fields"][1]["value"]
+            end = new if fld["label"] == "End" else info["fields"][2]["value"]
+            if end <= start:
+                raise ApiError("CMMD_EXEC_ERROR", "Regeneration failed: End must be greater than Start", "Use a larger End.", -152)
+            sh["volume"] = info["per_depth"] * (end - start)
+        elif info["template"] == "FtAllHole" and sh is not None:
+            if new <= 0:
+                raise ApiError("CMMD_EXEC_ERROR", "Regeneration failed: invalid diameter", "", -152)
+            eff = self.s.hole_effects[p["feature_id"]]
+            now = info["points"] * math.pi * (new / 2) ** 2 * info["length"]
+            sh["volume"] += eff["removed"] - now
+            eff["removed"] = now
+        fld["value"] = new
+        return {"feature_id": p["feature_id"], "field_id": p["field_id"], "value": new, **self._summary()}
 
     def list_variables(self, p):
         self.need_part()

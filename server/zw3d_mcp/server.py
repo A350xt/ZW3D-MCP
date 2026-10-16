@@ -490,8 +490,29 @@ def loft(sections: list[list[dict]], combine: Combine = "none") -> dict:
 
 @mcp.tool()
 def list_features() -> dict:
-    """List the feature ids of the active part's history (use with pattern_*/mirror feature targets)."""
+    """List the features of the active part's history: feature_id, name (e.g. 'Extrude1') and template. Use the ids with
+    pattern_*/mirror feature targets and with get_feature_data / set_feature_value."""
     return _call("list_features")
+
+
+@mcp.tool()
+def get_feature_data(feature_id: int) -> dict:
+    """Show the parameters of one feature: for every field its field_id, label, type and value (distances in mm, angles in
+    degrees), plus `variable_name` ("<FeatureName:field_id>") for numeric fields. Pick the field you want to change, then call
+    set_feature_value. Feature ids come from list_features."""
+    return _call("get_feature_data", {"feature_id": v.id_list([feature_id], "feature_id")[0]})
+
+
+@mcp.tool()
+def set_feature_value(feature_id: int, field_id: int, value: float) -> dict:
+    """Change a numeric parameter of an existing feature (extrusion depth, fillet radius, hole diameter, ...) and regenerate the
+    model: this is how to resize something after it was created. Look up field_id with get_feature_data. value is in mm (distance
+    fields), degrees (angle fields) or unitless. Returns the updated shapes with bbox/volume; if the new value makes the
+    geometry invalid the change is rolled back and an error with a hint is returned."""
+    if isinstance(field_id, bool) or not isinstance(field_id, int) or field_id < 0:
+        raise v.bad("field_id must be a non-negative integer", "Use a field_id from get_feature_data.")
+    return _call("set_feature_value", {"feature_id": v.id_list([feature_id], "feature_id")[0], "field_id": field_id,
+                                       "value": v.number(value, "value")})
 
 
 # ---------------------------------------------------------------- variables / parametric edits

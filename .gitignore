@@ -6,3 +6,9 @@ __pycache__/
 dist/
 plugin/build-release/
 server/build/
+*.Z3PRT
+*.Z3ASM
+*.Z3DRW
+*.Z3
+*.step
+*.stp

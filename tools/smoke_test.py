@@ -329,6 +329,33 @@ def main() -> int:
     if ih:
         approx("plate with inner hole volume", ih["volume"], (6000 - math.pi * 100) * 10)
     step(b, "list_features", "list_features")
+    # ---- feature parameters by name: list_features -> get_feature_data -> set_feature_value
+    ex_new = step(b, "extrude 20x20 d=10 (to be resized)", "extrude_polygon", {
+        "points": [[7000, 0, 0], [7020, 0, 0], [7020, 20, 0], [7000, 20, 0]], "distance": 10, "start": 0,
+        "direction": [0, 0, 1], "draft_angle": 0, "combine": "none"})
+    lf = step(b, "list_features (names)", "list_features")
+    if ex_new and lf and lf.get("features"):
+        last = lf["features"][-1]
+        print(f"       last feature: {last}")
+        fd = step(b, "get_feature_data (last feature)", "get_feature_data", {"feature_id": last["feature_id"]})
+        if fd:
+            for f in fd["fields"]:
+                print(f"       field {f['field_id']:>3} {f.get('label', ''):<18} {f.get('type'):<12} {f.get('value')}  {f.get('variable_name', '')}")
+            numeric = [f for f in fd["fields"] if f.get("editable") and isinstance(f.get("value"), (int, float))]
+            # the extrusion depth is the numeric field whose value equals the 10 we asked for
+            depth = [f for f in numeric if abs(f["value"] - 10) < 1e-6]
+            if depth:
+                done = step(b, f"set_feature_value field {depth[0]['field_id']} -> 30", "set_feature_value",
+                            {"feature_id": last["feature_id"], "field_id": depth[0]["field_id"], "value": 30})
+                if done:
+                    vol = [d for d in done["shape_details"] if d["shape_id"] == ex_new["shape_id"]]
+                    if vol:
+                        approx("resized extrusion volume (20x20x30)", vol[0]["volume"], 12000)
+                    else:
+                        print("       (shape id changed after regeneration; volumes listed in shape_details)")
+            else:
+                print("       (no field equal to the depth 10 found: see the field list above)")
+                failures += 1
 
     shot = step(b, "screenshot", "screenshot", {"width": 800, "height": 600, "zoom_all": True})
     if shot:

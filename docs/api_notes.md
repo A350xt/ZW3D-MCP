@@ -154,3 +154,13 @@ Every modeling method listed in `is_modeling_method()` (`plugin/src/handlers/com
    edited through the API. The header `cvxRootVarSet` documents that fields of history operations are addressed as variables named
    `<operation_name:field_number>`; the vendor example `15.EditVariable` uses `cvxPartInqFtrData` / `cvxDataGet` / `cvxDataSet` for this. A tool built on
    that (edit a feature's variables by name) is the likely way to resize features after the fact.
+
+## Feature parameters by name (get_feature_data / set_feature_value) — NOT yet run on a live ZW3D
+
+Follows the vendor example `15.EditVariable`: `cvxPartInqFtrData(idFeature, 0, &idData)` (falls back to `iNoEval = 1`), `cvxDataGetAll(idData, &n, &svxFldData*)`
+(`fld_id`, `fld_name`, `fld_type` = NUM / DST (mm) / ANG (**radians**) / PNT / ENT / TXT / DATA, `fld_data[0]` as `svxData`), freed with `cvxFldDataFree` and `cvxDataFree`.
+`svxData.Text` holds the referenced variable name/expression of a numeric field (`isText`).
+Editing: `cvxRootVarSet`'s header says a history operation's input field is addressed by a variable named `<operation_name:field_number>`
+(brackets included). `set_feature_value` builds that name from `cvxEntName(feature)` + `fld_id` and calls `cvxPartVarSet(1, &v, 0)` with
+`type = VX_VAR_NUM`, `sub_type` DST / ANG / CONS (mm / degrees). Unverified: that `cvxEntName` returns the same operation name ZW3D expects
+in the variable name, that field ids are stable between the read and the set, and which field ids a given feature uses (the smoke test prints them).
