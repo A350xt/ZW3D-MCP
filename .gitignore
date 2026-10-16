@@ -12,4 +12,3 @@ server/build/
 *.Z3
 *.step
 *.stp
-plugin/third_party/httplib.h
