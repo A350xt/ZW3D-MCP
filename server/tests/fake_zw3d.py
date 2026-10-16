@@ -105,9 +105,10 @@ class Fake:
             "extrude_profile": self.extrude_profile, "revolve_profile": self.revolve_profile,
             "chamfer_edges": self.chamfer_edges, "shell_shape": self.shell_shape,
             "undo": self.undo, "redo": self.redo,
+            "sketch_extrude": self.sketch_extrude, "sketch_revolve": self.sketch_revolve,
         }
         self.mutating = {"create_box", "create_cylinder", "create_sphere", "extrude_polygon", "revolve_polygon",
-                         "extrude_profile", "revolve_profile", "boolean", "fillet_edges", "chamfer_edges",
+                         "extrude_profile", "revolve_profile", "sketch_extrude", "sketch_revolve", "boolean", "fillet_edges", "chamfer_edges",
                          "shell_shape"}
         self.undo_stack: list = []
         self.redo_stack: list = []
@@ -155,7 +156,8 @@ class Fake:
                 continue
             self._apply_bool(oid, combine, tool)
         del s.shapes[sid]
-        return {"shape_id": None, "shapes": sorted(s.shapes)}
+        return {"shape_id": None, "shapes": sorted(s.shapes),
+                "shape_details": [self.describe(i) for i in sorted(s.shapes)]}
 
     def _apply_bool(self, base_id, op, tool):
         base = self.s.shapes[base_id]
@@ -334,6 +336,48 @@ class Fake:
         q["points"] = self._segments_to_polygon(p["segments"])
         return self.revolve_polygon(q)
 
+    @staticmethod
+    def _sketch_to_3d(p):
+        fr = p["plane"]
+        o, x, y = fr["origin"], _unit(fr["x_axis"]), _unit(fr["y_axis"])
+
+        def g(pt):
+            return _add(o, _add(_mul(x, pt[0]), _mul(y, pt[1])))
+        segs3 = []
+        for sg in p["segments"]:
+            q = {"type": sg["type"]}
+            for key in ("start", "end", "through", "center"):
+                if key in sg:
+                    q[key] = g(sg[key])
+            if "radius" in sg:
+                q["radius"] = sg["radius"]
+            if sg["type"] == "circle":
+                q["normal"] = _unit(_cross(x, y))
+            segs3.append(q)
+        return segs3, x, y
+
+    def _with_sketch_info(self, res, p):
+        res["sketch_id"] = self.s.nid()
+        want = p.get("dimensions", True)
+        res["dimensions_added"] = sum(1 for sg in p["segments"] if sg["type"] in ("line", "circle")) if want else 0
+        res["dimensions_failed"] = 0
+        return res
+
+    def sketch_extrude(self, p):
+        segs3, _, _ = self._sketch_to_3d(p)
+        q = {k: p[k] for k in ("distance", "start", "draft_angle", "combine", "direction") if k in p}
+        q["segments"] = segs3
+        return self._with_sketch_info(self.extrude_profile(q), p)
+
+    def sketch_revolve(self, p):
+        segs3, x, y = self._sketch_to_3d(p)
+        o = p["plane"]["origin"]
+        ap, ad = p["axis_point"], p["axis_direction"]
+        q = {"segments": segs3, "angle": p["angle"], "start_angle": p.get("start_angle", 0.0), "combine": p.get("combine", "none"),
+             "axis_point": _add(o, _add(_mul(x, ap[0]), _mul(y, ap[1]))),
+             "axis_direction": _add(_mul(x, ad[0]), _mul(y, ad[1]))}
+        return self._with_sketch_info(self.revolve_profile(q), p)
+
     def chamfer_edges(self, p):
         sh = self.shape(p["shape_id"])
         d1, d2 = p["distance"], p.get("distance2") or p["distance"]
@@ -384,7 +428,10 @@ class Fake:
             done += 1
         if not done:
             raise ApiError("NOTHING_TO_DO", "Nothing to undo" if undo else "Nothing to redo", "")
-        return {"steps_done": done, "shapes": sorted(self.s.shapes)}
+        before = set(dst[-1].shapes) if dst else set()
+        after = set(self.s.shapes)
+        return {"steps_done": done, "shapes": sorted(after), "removed_shape_ids": sorted(before - after),
+                "added_shape_ids": sorted(after - before), "undo_steps_available": len(self.undo_stack)}
 
     def boolean(self, p):
         base = self.shape(p["base_id"])
@@ -461,7 +508,7 @@ class Fake:
 
     def run_command(self, p):
         if not self.enable_run_command:
-            raise ApiError("DISABLED", "run_command is disabled", "Set ZW3D_MCP_ENABLE_RUN_COMMAND=1 before starting ZW3D.")
+            raise ApiError("DISABLED", "run_command is disabled", "Set ZW3D_MCP_ENABLE_RUN_COMMAND=1 before starting ZW3D.", None)
         return {"sent": p["command"]}
 
     def _sleep(self, p):

@@ -126,7 +126,7 @@ void Server::HandleLine(unsigned long long client, const std::string& line) {
   json resp;
   json req = json::parse(line, nullptr, /*allow_exceptions=*/false);
   if (req.is_discarded() || !req.is_object()) {
-    resp = {{"ok", false}, {"error", {{"code", "PARSE_ERROR"}, {"api_code", 0}, {"message", "请求不是合法 JSON 对象"}, {"hint", ""}}}};
+    resp = {{"ok", false}, {"error", {{"code", "PARSE_ERROR"}, {"api_code", nullptr}, {"message", "请求不是合法 JSON 对象"}, {"hint", ""}}}};
   } else {
     id = req.value("id", json(nullptr));
     std::string method = req.value("method", std::string());
@@ -134,7 +134,7 @@ void Server::HandleLine(unsigned long long client, const std::string& line) {
     int timeout_ms = req.value("timeout_ms", 60000);
     if (timeout_ms < 100) timeout_ms = 100;
     if (method.empty())
-      resp = {{"ok", false}, {"error", {{"code", "INVALID_INPUT"}, {"api_code", 0}, {"message", "缺少 method"}, {"hint", ""}}}};
+      resp = {{"ok", false}, {"error", {{"code", "INVALID_INPUT"}, {"api_code", nullptr}, {"message", "缺少 method"}, {"hint", ""}}}};
     else
       resp = dispatcher().Execute(method, params, timeout_ms);
   }

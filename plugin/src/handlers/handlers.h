@@ -37,6 +37,10 @@ json describe_shape_or_null(int id);             // same but null if the id no l
 json bbox_json(const svxBndBox& b);
 // Result of a creation call: describes `id` if one was produced, otherwise lists the surviving shapes.
 json creation_result(evxBoolType combine, int id);
+// Runs a handler; modeling handlers are wrapped in ONE undo transaction (all of their cvx* steps are bundled with
+// cvxXnBundle) and are rolled back completely if they fail, so no stray profile curves / half-built sketches stay behind.
+json invoke_handler(const std::string& method, Handler h, const json& params);
+bool is_modeling_method(const std::string& method);
 void cleanup_screenshots(int older_than_s);   // file.cpp; -1 = delete all and remove the folder
 std::string current_file_utf8();
 std::string current_root_utf8();

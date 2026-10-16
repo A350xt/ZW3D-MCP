@@ -134,13 +134,113 @@ int make_profile(const json& p) {
   return list;
 }
 
-json h_extrude_polygon(const json& p) {
+// ---------------------------------------------------------------------------------------------------------------
+// Sketches: a real sketch feature in the history tree (geometry + coincident constraints + optional dimensions),
+// used as the profile of an extrude/revolve so the part can be edited later from the sketch.
+// ---------------------------------------------------------------------------------------------------------------
+svxMatrix sketch_frame(const json& plane) {
+  svxPoint o = to_point(plane.at("origin"), "plane.origin");
+  svxVector x = to_vector(plane.at("x_axis"), "plane.x_axis"), y = to_vector(plane.at("y_axis"), "plane.y_axis");
+  auto len = [](const svxVector& v) { return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z); };
+  if (len(x) < 1e-12 || len(y) < 1e-12) invalid_input("plane 的坐标轴不能为零向量");
+  x = {x.x / len(x), x.y / len(x), x.z / len(x)};
+  svxVector z{x.y * y.z - x.z * y.y, x.z * y.x - x.x * y.z, x.x * y.y - x.y * y.x};
+  if (len(z) < 1e-9) invalid_input("plane 的 x_axis 与 y_axis 平行");
+  z = {z.x / len(z), z.y / len(z), z.z / len(z)};
+  y = {z.y * x.z - z.z * x.y, z.z * x.x - z.x * x.z, z.x * x.y - z.y * x.x};  // make y exactly orthogonal
+  svxMatrix m;
+  std::memset(&m, 0, sizeof(m));
+  m.identity = 0;
+  m.xx = x.x; m.xy = x.y; m.xz = x.z;  // first column = x direction (field names are <axis><component>)
+  m.yx = y.x; m.yy = y.y; m.yz = y.z;
+  m.zx = z.x; m.zy = z.y; m.zz = z.z;
+  m.xt = o.x; m.yt = o.y; m.zt = o.z;
+  return m;
+}
+
+svxPoint2 to_point2(const json& v, const char* name) {
+  if (!v.is_array() || v.size() != 2 || !v[0].is_number() || !v[1].is_number()) invalid_input(std::string(name) + " 必须是 [x, y] 两个数字");
+  return svxPoint2{v[0].get<double>(), v[1].get<double>()};
+}
+
+// Leaves sketch edit mode when it goes out of scope (also on exceptions), so ZW3D is never left inside a sketch.
+struct SketchEditGuard {
+  bool active = false;
+  void leave() {
+    if (active) {
+      active = false;
+      cvxRootExit();
+    }
+  }
+  ~SketchEditGuard() { leave(); }
+};
+
+// Best-effort driving dimension; failures are counted, never fatal.
+bool add_dimension(evxConsDimType type, int sub, svxPoint a, svxPoint b, svxPoint text, int ent1, int ent2) {
+  svxConsDim d;
+  std::memset(&d, 0, sizeof(d));
+  d.firstPnt = a;
+  d.secondPnt = b;
+  d.textPnt = text;
+  d.type = sub;
+  d.firstEnt = ent1;
+  d.secondEnt = ent2;
+  return cvxSkAddConsDim(type, &d) == 0;
+}
+
+int build_sketch(const json& p, json& info) {
+  svxMatrix frame = sketch_frame(p.at("plane"));
+  const json& segs = p.at("segments");
+  if (!segs.is_array() || segs.empty()) invalid_input("segments 不能为空");
+  bool want_dims = p.value("dimensions", true);
+
+  SketchEditGuard edit;
+  int sk = 0;
+  check_api(cvxPartSkNew(&frame, &sk), "cvxPartSkNew");
+  edit.active = true;
+
+  int dims_ok = 0, dims_fail = 0;
+  for (const auto& s : segs) {
+    std::string type = s.at("type").get<std::string>();
+    int id = 0;
+    if (type == "line") {
+      svxPoint2 a = to_point2(s.at("start"), "start"), b = to_point2(s.at("end"), "end");
+      check_api(cvxSkLine2pt(&a, &b, &id), "cvxSkLine2pt");
+      if (want_dims) {
+        double dx = b.x - a.x, dy = b.y - a.y, l = std::sqrt(dx * dx + dy * dy);
+        svxPoint mid{(a.x + b.x) / 2 - dy / l * 5, (a.y + b.y) / 2 + dx / l * 5, 0};
+        (add_dimension(VX_SK_CONSDIM_LINEAR, 3, {a.x, a.y, 0}, {b.x, b.y, 0}, mid, id, id) ? dims_ok : dims_fail)++;
+      }
+    } else if (type == "arc") {
+      svxPoint2 a = to_point2(s.at("start"), "start"), b = to_point2(s.at("end"), "end"), m = to_point2(s.at("through"), "through");
+      check_api(cvxSkArc3pt(&a, &b, &m, &id), "cvxSkArc3pt");  // note: (Start, End, Mid)
+    } else if (type == "circle") {
+      svxPoint2 c = to_point2(s.at("center"), "center");
+      double r = s.at("radius").get<double>();
+      if (!(r > 0)) invalid_input("圆半径必须为正");
+      check_api(cvxSkCirRad(&c, r, &id), "cvxSkCirRad");
+      if (want_dims)
+        (add_dimension(VX_SK_CONSDIM_RADIAL, 2, {c.x + r, c.y, 0}, {0, 0, 0}, {c.x + r * 1.5, c.y + r * 0.5, 0}, id, 0) ? dims_ok : dims_fail)++;
+    } else {
+      invalid_input("未知草图段类型: " + type, "可选: line, arc, circle");
+    }
+  }
+  cvxSkAutoAddCoinCons(-1);  // join touching end points (result intentionally ignored: constraints are a bonus)
+  edit.leave();
+  info["sketch_id"] = sk;
+  info["dimensions_added"] = dims_ok;
+  info["dimensions_failed"] = dims_fail;
+  return sk;
+}
+
+json extrude_impl(const json& p, bool sketch) {
+  json info = json::object();
   evxBoolType combine = parse_combine(p);
   double dist = p.at("distance").get<double>();
   double start = p.value("start", 0.0);
   if (!(dist > start)) invalid_input("distance 必须大于 start");
   DispGuard guard;
-  int profile = make_profile(p);
+  int profile = sketch ? build_sketch(p, info) : make_profile(p);
   svxExtrudeData ext;
   check_api(cvxPartExtrudeInit(&ext), "cvxPartExtrudeInit");
   ext.Combine = combine;
@@ -157,21 +257,34 @@ json h_extrude_polygon(const json& p) {
   ext.OffsetTyp = VX_OFFSET_NONE;
   int id = 0;
   check_api(cvxPartExtrude(&ext, &id), "cvxPartExtrude");
-  return creation_result(combine, id);
+  json out = creation_result(combine, id);
+  for (auto it = info.begin(); it != info.end(); ++it) out[it.key()] = it.value();
+  return out;
 }
+json h_extrude_polygon(const json& p) { return extrude_impl(p, false); }
+json h_sketch_extrude(const json& p) { return extrude_impl(p, true); }
 
-json h_revolve_polygon(const json& p) {
+json revolve_impl(const json& p, bool sketch) {
+  json info = json::object();
   evxBoolType combine = parse_combine(p);
   double angle = p.at("angle").get<double>(), start = p.value("start_angle", 0.0);
   if (!(angle > start) || angle - start > 360.0) invalid_input("angle - start_angle 必须在 (0, 360] 内");
   DispGuard guard;
-  int profile = make_profile(p);
+  int profile = sketch ? build_sketch(p, info) : make_profile(p);
   svxRevolveData rev;
   check_api(cvxPartRevolveInit(&rev), "cvxPartRevolveInit");
   rev.Combine = combine;
   rev.idProfile = profile;
-  rev.Axis.Pnt = to_point(p.at("axis_point"), "axis_point");
-  rev.Axis.Dir = to_vector(p.at("axis_direction"), "axis_direction");
+  if (sketch) {  // axis given in sketch coordinates: map it to global with the sketch frame
+    svxMatrix f = sketch_frame(p.at("plane"));
+    svxPoint2 ap = to_point2(p.at("axis_point"), "axis_point"), ad = to_point2(p.at("axis_direction"), "axis_direction");
+    if (ad.x * ad.x + ad.y * ad.y < 1e-18) invalid_input("axis_direction 不能为零向量");
+    rev.Axis.Pnt = {f.xt + ap.x * f.xx + ap.y * f.yx, f.yt + ap.x * f.xy + ap.y * f.yy, f.zt + ap.x * f.xz + ap.y * f.yz};
+    rev.Axis.Dir = {ad.x * f.xx + ad.y * f.yx, ad.x * f.xy + ad.y * f.yy, ad.x * f.xz + ad.y * f.yz};
+  } else {
+    rev.Axis.Pnt = to_point(p.at("axis_point"), "axis_point");
+    rev.Axis.Dir = to_vector(p.at("axis_direction"), "axis_direction");
+  }
   rev.StartType = VX_INPU_VALUE;
   rev.EndType = VX_INPU_VALUE;
   rev.Start = start;
@@ -179,8 +292,12 @@ json h_revolve_polygon(const json& p) {
   rev.OffsetTyp = VX_OFFSET_NONE;
   int id = 0;
   check_api(cvxPartRevolve(&rev, &id), "cvxPartRevolve");
-  return creation_result(combine, id);
+  json out = creation_result(combine, id);
+  for (auto it = info.begin(); it != info.end(); ++it) out[it.key()] = it.value();
+  return out;
 }
+json h_revolve_polygon(const json& p) { return revolve_impl(p, false); }
+json h_sketch_revolve(const json& p) { return revolve_impl(p, true); }
 
 json h_boolean(const json& p) {
   std::string op = p.at("operation").get<std::string>();
@@ -307,6 +424,8 @@ void register_part_handlers(std::map<std::string, Handler>& m) {
   m["fillet_edges"] = h_fillet_edges;
   m["chamfer_edges"] = h_chamfer_edges;
   m["shell_shape"] = h_shell_shape;
+  m["sketch_extrude"] = h_sketch_extrude;
+  m["sketch_revolve"] = h_sketch_revolve;
   m["extrude_profile"] = h_extrude_polygon;
   m["revolve_profile"] = h_revolve_polygon;
 }

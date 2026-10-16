@@ -152,6 +152,67 @@ def main() -> int:
         print(f"       shapes after undo+redo match: {same}")
         failures += 0 if same else 1
 
+    # ---- batch 3: real sketches, atomic undo, failure cleanup, round-edge boxes
+    rect = [{"type": "line", "start": [0, 0], "end": [40, 0]}, {"type": "line", "start": [40, 0], "end": [40, 20]},
+            {"type": "line", "start": [40, 20], "end": [0, 20]}, {"type": "line", "start": [0, 20], "end": [0, 0]}]
+    sk = step(b, "sketch_extrude rect 40x20 d=10 (XY, z=300)", "sketch_extrude", {
+        "plane": {"origin": [1300, 0, 300], "x_axis": [1, 0, 0], "y_axis": [0, 1, 0]}, "segments": rect,
+        "distance": 10, "start": 0, "direction": None, "draft_angle": 0, "dimensions": True, "combine": "none"})
+    if sk:
+        approx("sketch rect volume", sk["volume"], 40 * 20 * 10)
+        print(f"       sketch_id={sk.get('sketch_id')} dimensions_added={sk.get('dimensions_added')} "
+              f"dimensions_failed={sk.get('dimensions_failed')}  bbox={sk['bounding_box']['min']}..{sk['bounding_box']['max']}")
+    skc = step(b, "sketch_extrude circle R6 d=8", "sketch_extrude", {
+        "plane": {"origin": [1500, 0, 0], "x_axis": [1, 0, 0], "y_axis": [0, 1, 0]},
+        "segments": [{"type": "circle", "center": [0, 0], "radius": 6}], "distance": 8, "start": 0,
+        "direction": None, "draft_angle": 0, "dimensions": True, "combine": "none"})
+    if skc:
+        approx("sketch circle volume", skc["volume"], math.pi * 36 * 8)
+        el = step(b, "list_edges (circle bbox must be 12x12)", "list_edges", {"shape_id": skc["shape_id"]})
+        if el:
+            circ = [e for e in el["edges"] if e.get("curve", {}).get("type") == "circle"]
+            ok = bool(circ) and all(abs(e["bounding_box"]["size"][0] - 12) < 1e-3 and abs(e["bounding_box"]["size"][1] - 12) < 1e-3 for e in circ)
+            print(f"       circle edges: {len(circ)}, boxes exact: {ok}  e.g. {circ[0]['bounding_box']['size'] if circ else None}")
+            failures += 0 if ok else 1
+    sr = step(b, "sketch_revolve rect around sketch Y", "sketch_revolve", {
+        "plane": {"origin": [1700, 0, 0], "x_axis": [1, 0, 0], "y_axis": [0, 1, 0]},
+        "segments": [{"type": "line", "start": [10, 0], "end": [20, 0]}, {"type": "line", "start": [20, 0], "end": [20, 10]},
+                     {"type": "line", "start": [20, 10], "end": [10, 10]}, {"type": "line", "start": [10, 10], "end": [10, 0]}],
+        "axis_point": [0, 0], "axis_direction": [0, 1], "angle": 360, "start_angle": 0, "dimensions": False, "combine": "none"})
+    if sr:
+        approx("sketch revolve volume", sr["volume"], math.pi * (400 - 100) * 10)
+
+    # one tool call == one undo step
+    ua = step(b, "undo test: box A", "create_box", {"center": [2000, 0, 5], "size": [10, 10, 10], "combine": "none"})
+    ub = step(b, "undo test: polygon extrude B", "extrude_polygon", {
+        "points": [[2100, 0, 0], [2110, 0, 0], [2110, 10, 0], [2100, 10, 0]], "distance": 5, "start": 0,
+        "direction": [0, 0, 1], "draft_angle": 0, "combine": "none"})
+    if ua and ub:
+        r1 = step(b, "undo #1 (must remove exactly B)", "undo", {"steps": 1})
+        r2 = step(b, "undo #2 (must remove exactly A)", "undo", {"steps": 1})
+        ok = bool(r1 and r2) and r1["removed_shape_ids"] == [ub["shape_id"]] and r2["removed_shape_ids"] == [ua["shape_id"]]
+        print(f"       undo is one step per tool call: {ok}")
+        failures += 0 if ok else 1
+        step(b, "redo x2", "redo", {"steps": 2})
+
+    # failed operations must leave nothing behind
+    fa = step(b, "cleanup test: box F", "create_box", {"center": [2300, 0, 5], "size": [10, 10, 10], "combine": "none"})
+    if fa:
+        step(b, "failing fillet r=500 (expect error)", "fillet_edges", {"shape_id": fa["shape_id"], "radius": 500}, expect_error="CMMD_EXEC_ERROR")
+        try:  # bypasses the client-side axis check on purpose
+            res = b.call("revolve_polygon", {"points": [[2400, 0, 0], [2410, 0, 0], [2410, 10, 0], [2400, 10, 0]],
+                                             "axis_point": [2405, 0, 0], "axis_direction": [0, 1, 0],
+                                             "angle": 360, "start_angle": 0, "combine": "none"})
+            print("       (axis-crossing revolve was accepted by ZW3D; undoing it)")
+            b.call("undo", {"steps": 1})
+        except ZW3DError as e:
+            print(f"       axis-crossing revolve rejected by ZW3D: [{e.code}] {e.message[:80]}")
+        r = step(b, "undo after failures (must remove only box F)", "undo", {"steps": 1})
+        ok = bool(r) and r["removed_shape_ids"] == [fa["shape_id"]]
+        print(f"       failed operations left no undo steps behind: {ok}")
+        failures += 0 if ok else 1
+        step(b, "redo", "redo", {"steps": 1})
+
     shot = step(b, "screenshot", "screenshot", {"width": 800, "height": 600, "zoom_all": True})
     if shot:
         p = pathlib.Path(shot["path"])

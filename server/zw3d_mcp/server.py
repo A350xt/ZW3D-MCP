@@ -174,10 +174,12 @@ def revolve_polygon(
     pts = v.polygon(points)
     if not (0 < angle - start_angle <= 360):
         raise v.bad("angle - start_angle must be in (0, 360]")
+    ap, ad = v.point(axis_point, "axis_point"), v.vector(axis_direction, "axis_direction")
+    v.check_axis_not_crossed(pts, ap, ad)
     return _call("revolve_polygon", {
         "points": pts,
-        "axis_point": v.point(axis_point, "axis_point"),
-        "axis_direction": v.vector(axis_direction, "axis_direction"),
+        "axis_point": ap,
+        "axis_direction": ad,
         "angle": float(angle), "start_angle": float(start_angle), "combine": combine,
     })
 
@@ -222,14 +224,80 @@ def revolve_profile(
     """Revolve a closed profile of lines/arcs (same segment format as extrude_profile) around an axis.
     Typical use: a half cross-section of a shaft, pulley or bowl. Angles in degrees. """
     segs = v.segments(segments)
-    if any(sg["type"] == "circle" for sg in segs):
-        pass  # a circle revolved about an outside axis gives a torus; allowed
     if not (0 < angle - start_angle <= 360):
         raise v.bad("angle - start_angle must be in (0, 360]")
+    ap, ad = v.point(axis_point, "axis_point"), v.vector(axis_direction, "axis_direction")
+    v.check_axis_not_crossed(v._profile_points(segs), ap, ad)
     return _call("revolve_profile", {
-        "segments": segs, "axis_point": v.point(axis_point, "axis_point"),
-        "axis_direction": v.vector(axis_direction, "axis_direction"),
+        "segments": segs, "axis_point": ap, "axis_direction": ad,
         "angle": float(angle), "start_angle": float(start_angle), "combine": combine})
+
+
+@mcp.tool()
+@_with_combine_help
+def sketch_extrude(
+    plane: str | dict,
+    segments: list[dict],
+    distance: float,
+    start: float = 0.0,
+    symmetric: bool = False,
+    reverse: bool = False,
+    draft_angle: float = 0.0,
+    dimensions: bool = True,
+    combine: Combine = "none",
+) -> dict:
+    """Create a real SKETCH on a plane and extrude it (the sketch stays in the feature tree, so the part can be edited
+    from the sketch later; extrude_profile/extrude_polygon only draw loose wireframe instead).
+
+    plane: 'XY' (normal +Z), 'YZ' (normal +X), 'ZX' (normal +Y); or {"name":"XY","origin":[0,0,20]} for an offset
+    plane; or a full frame {"origin":[..],"x_axis":[..],"y_axis":[..]} (normal = x_axis x y_axis).
+    segments: 2D points [x, y] in the sketch frame (mm), one closed loop of lines/arcs, or a single circle:
+      {"type":"line","start":[x,y],"end":[x,y]} | {"type":"arc","start":[..],"through":[..],"end":[..]} |
+      {"type":"circle","center":[x,y],"radius":r}
+    distance: extrusion depth along the plane normal (mm); start: start offset; symmetric: extrude distance/2 to both
+    sides; reverse: go against the normal. dimensions=True adds driving dimensions (line lengths, circle diameters)
+    to the sketch (best effort; the result reports dimensions_added / dimensions_failed). """
+    frame = v.sketch_plane(plane)
+    segs = v.segments2d(segments)
+    if distance <= 0:
+        raise v.bad("distance must be positive")
+    if symmetric:
+        start, end = -distance / 2.0, distance / 2.0
+    else:
+        start, end = float(start), float(start) + float(distance)
+    n = v.plane_normal(frame)
+    return _call("sketch_extrude", {
+        "plane": frame, "segments": segs, "distance": end, "start": start, "draft_angle": float(draft_angle),
+        "direction": [-c for c in n] if reverse else None, "dimensions": bool(dimensions), "combine": combine})
+
+
+@mcp.tool()
+@_with_combine_help
+def sketch_revolve(
+    plane: str | dict,
+    segments: list[dict],
+    axis_point: list[float],
+    axis_direction: list[float],
+    angle: float = 360.0,
+    start_angle: float = 0.0,
+    dimensions: bool = True,
+    combine: Combine = "none",
+) -> dict:
+    """Create a real sketch on a plane and revolve it. plane/segments as in sketch_extrude; axis_point and
+    axis_direction are 2D ([x, y]) in the sketch frame and the profile must stay on ONE side of the axis.
+    Angles in degrees. """
+    frame = v.sketch_plane(plane)
+    segs = v.segments2d(segments)
+    if not (0 < angle - start_angle <= 360):
+        raise v.bad("angle - start_angle must be in (0, 360]")
+    ap = [float(c) for c in axis_point] if isinstance(axis_point, (list, tuple)) and len(axis_point) == 2 else None
+    ad = [float(c) for c in axis_direction] if isinstance(axis_direction, (list, tuple)) and len(axis_direction) == 2 else None
+    if ap is None or ad is None or (ad[0] == 0 and ad[1] == 0):
+        raise v.bad("axis_point and axis_direction must be 2D [x, y] (direction not zero)")
+    v.check_axis_not_crossed(v._profile_points(segs), ap, ad)
+    return _call("sketch_revolve", {
+        "plane": frame, "segments": segs, "axis_point": ap, "axis_direction": ad,
+        "angle": float(angle), "start_angle": float(start_angle), "dimensions": bool(dimensions), "combine": combine})
 
 
 # ---------------------------------------------------------------- modify
@@ -284,7 +352,8 @@ def shell_shape(shape_id: int, thickness: float, open_face_ids: list[int] | None
 
 @mcp.tool()
 def undo(steps: int = 1) -> dict:
-    """Undo the last `steps` operations (1..50). Returns the shapes that remain."""
+    """Undo the last `steps` operations (1..50); one modeling tool call is one step. Returns the remaining shapes plus
+    removed_shape_ids / added_shape_ids so you can see what actually changed."""
     if not (1 <= steps <= 50):
         raise v.bad("steps must be between 1 and 50")
     return _call("undo", {"steps": steps})

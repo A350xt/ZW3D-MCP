@@ -1,5 +1,6 @@
 // Read-only handlers (no model changes, so no DispGuard) and the method registry.
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include "handlers.h"
 #include "../dispatcher.h"
@@ -92,6 +93,32 @@ json h_list_edges(const json& p) {
                            {"radius", crv.R}};
           break;
         default: item["curve"] = {{"type", "nurbs"}}; break;
+      }
+      // cvxEntBndBox over-estimates round edges (control-polygon box): rebuild an exact box from the curve.
+      if (crv.Type == VX_CRV_LINE || crv.Type == VX_CRV_ARC || crv.Type == VX_CRV_CIRCLE) {
+        double lo[3] = {1e300, 1e300, 1e300}, hi[3] = {-1e300, -1e300, -1e300};
+        auto add = [&](double x, double y, double z) {
+          double v[3] = {x, y, z};
+          for (int k = 0; k < 3; ++k) { lo[k] = std::min(lo[k], v[k]); hi[k] = std::max(hi[k], v[k]); }
+        };
+        if (crv.Type == VX_CRV_LINE) {
+          add(crv.P1.x, crv.P1.y, crv.P1.z);
+          add(crv.P2.x, crv.P2.y, crv.P2.z);
+        } else {
+          const svxMatrix& f = crv.Frame;
+          double a0 = crv.Type == VX_CRV_CIRCLE ? 0.0 : crv.A1, a1 = crv.Type == VX_CRV_CIRCLE ? 360.0 : crv.A2;
+          if (a1 < a0) a1 += 360.0;
+          const int N = 720;
+          for (int i = 0; i <= N; ++i) {
+            double a = (a0 + (a1 - a0) * i / N) * 3.14159265358979323846 / 180.0, c = std::cos(a) * crv.R, s = std::sin(a) * crv.R;
+            add(f.xt + c * f.xx + s * f.yx, f.yt + c * f.xy + s * f.yy, f.zt + c * f.xz + s * f.yz);
+          }
+        }
+        svxBndBox exact{};
+        exact.X = {lo[0], hi[0]};
+        exact.Y = {lo[1], hi[1]};
+        exact.Z = {lo[2], hi[2]};
+        item["bounding_box"] = bbox_json(exact);
       }
       cvxCurveFree(&crv);
     }

@@ -95,3 +95,21 @@ and whether PNG honours Width/Height.
   (e.g. a polygon extrude = N lines + curve list + extrude) is one undo step or several.
 - Edge bbox: `cvxPartInqEntBox(idEdge, NULL, &box)`; face surface: `cvxPartInqFaceSrfPrim` (`srfType`: `VX_SF_PRIM_PLN/CYL/...`,
   plane normal = z column `zx,zy,zz` of `pln.form`, sign not guaranteed outward; free NURBS with `cvxSurfaceFree`).
+
+## Batch 3 (from user feedback; headers-based, verify with `tools/smoke_test.py`)
+
+- **Sketches**: `cvxPartSkNew(svxMatrix *Plane, int *idSketch)` creates AND activates a sketch; geometry via `cvxSkLine2pt`,
+  `cvxSkArc3pt(Start, End, Mid)` (note the order), `cvxSkCirRad(Center, R)` with `svxPoint2` in sketch coordinates;
+  `cvxSkAutoAddCoinCons(-1)` joins end points; `cvxSkAddConsDim(type, svxConsDim*)` adds driving dimensions (linear aligned = sub
+  type 3, radial diameter = sub type 2; best effort, failures are counted not fatal); leave with `cvxRootExit()` (RAII guard).
+  The sketch id is then passed as `idProfile` to `cvxPartExtrude` / `cvxPartRevolve`. `svxMatrix` columns: x = (xx,xy,xz),
+  y = (yx,yy,yz), z = (zx,zy,zz), origin = (xt,yt,zt) — field names are `<axis><component>`.
+- **Undo granularity / failure cleanup**: every modeling handler runs inside `invoke_handler`: `base = cvxXnUndoCount()`;
+  on success `cvxXnBundle(base, method)` merges all steps of the call into one; on failure `cvxUndoRedo(1)` is repeated until the
+  count is back at `base`, so no loose lines/sketches remain. Open: whether `cvxXnUndoCount` counts exactly the steps `cvxUndoRedo`
+  undoes (the smoke test checks "one undo removes exactly one tool call" and "failed calls leave no step").
+- **Round edge boxes**: `cvxEntBndBox` returns a loose box for circles/arcs (R6 circle gave 18x20.8); `list_edges` now rebuilds the
+  box from the curve (frame origin/axes, `R`, `A1..A2` degrees; lines from `P1`/`P2`).
+- `api_code` is `null` for errors that do not come from a ZW3D API call (0 reads as success).
+- Revolve crossing the axis is rejected client-side (profile on both sides of the axis); sketch revolve axis is 2D in sketch frame.
+- STEP files written with a Chinese file name show garbled bytes in the header comment (ZW3D's translator writes GBK); geometry is unaffected.

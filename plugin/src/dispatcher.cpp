@@ -39,7 +39,7 @@ void Dispatcher::Shutdown() {
     j->cancelled = true;
     try {
       j->done.set_value(json{{"ok", false},
-                             {"error", {{"code", "SHUTDOWN"}, {"api_code", 0}, {"message", "插件正在卸载"}, {"hint", ""}}}});
+                             {"error", {{"code", "SHUTDOWN"}, {"api_code", nullptr}, {"message", "插件正在卸载"}, {"hint", ""}}}});
     } catch (const std::future_error&) {}
   }
 }
@@ -54,7 +54,7 @@ void Dispatcher::Destroy() {
 
 json Dispatcher::Execute(const std::string& method, const json& params, int timeout_ms) {
   auto error = [](const char* code, const char* msg, const char* hint) {
-    return json{{"ok", false}, {"error", {{"code", code}, {"api_code", 0}, {"message", msg}, {"hint", hint}}}};
+    return json{{"ok", false}, {"error", {{"code", code}, {"api_code", nullptr}, {"message", msg}, {"hint", hint}}}};
   };
   if (stopping_ || !hwnd_) return error("SHUTDOWN", "插件未运行", "");
 
@@ -108,14 +108,14 @@ void Dispatcher::Drain() {
 
 json Dispatcher::Run(Job& job) {
   auto fail = [](const std::string& code, const std::string& msg, const std::string& hint, int api) {
-    return json{{"ok", false}, {"error", {{"code", code}, {"api_code", api}, {"message", msg}, {"hint", hint}}}};
+    return json{{"ok", false}, {"error", {{"code", code}, {"api_code", api ? json(api) : json(nullptr)}, {"message", msg}, {"hint", hint}}}};
   };
   try {
     const auto& reg = handler_registry();
     auto it = reg.find(job.method);
     if (it == reg.end())
       return fail("UNKNOWN_METHOD", "未知方法: " + job.method, "检查插件版本与 MCP 服务端版本是否匹配。", 0);
-    return json{{"ok", true}, {"result", it->second(job.params)}};
+    return json{{"ok", true}, {"result", invoke_handler(job.method, it->second, job.params)}};
   } catch (const ApiError& e) {
     return fail(e.code, e.what(), e.hint, e.api_code);
   } catch (const json::exception& e) {

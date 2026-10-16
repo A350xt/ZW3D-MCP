@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <chrono>
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
 #include "handlers.h"
 #include "../encoding.h"
@@ -133,12 +134,21 @@ json h_screenshot(const json& p) {
 json h_undo_redo(const json& p, bool undo) {
   int steps = p.value("steps", 1);
   if (steps < 1 || steps > 50) invalid_input("steps 必须在 1..50 之间");
+  std::vector<int> before = inq_shape_ids();
   int done = 0;
   for (; done < steps; ++done) {
     if (cvxUndoRedo(undo ? 1 : 0) != 0) break;
   }
   if (done == 0) throw ApiError("NOTHING_TO_DO", undo ? "没有可撤销的操作" : "没有可重做的操作", "");
-  return {{"steps_done", done}, {"shapes", inq_shape_ids()}};
+  std::vector<int> after = inq_shape_ids();
+  json removed = json::array(), added = json::array();
+  for (int s : before) if (std::find(after.begin(), after.end(), s) == after.end()) removed.push_back(s);
+  for (int s : after) if (std::find(before.begin(), before.end(), s) == before.end()) added.push_back(s);
+  json out = {{"steps_done", done}, {"shapes", after}, {"removed_shape_ids", removed}, {"added_shape_ids", added},
+              {"undo_steps_available", cvxXnUndoCount()}};
+  if (removed.empty() && added.empty())
+    out["note"] = "撤销/重做的步骤没有改变任何实体（可能只涉及线框、草图或特征参数）；用 list_shapes 核对。";
+  return out;
 }
 json h_undo(const json& p) { return h_undo_redo(p, true); }
 json h_redo(const json& p) { return h_undo_redo(p, false); }

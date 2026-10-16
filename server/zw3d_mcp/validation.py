@@ -140,3 +140,103 @@ def segments(segs, name: str = "segments") -> list[dict]:
             raise bad(f"{name}: segment {i} does not end where segment {(i + 1) % len(out)} starts",
                       "List segments in order around the outline; the last end must equal the first start.")
     return out
+
+
+PLANES = {  # right-handed frames: normal = x_axis x y_axis
+    "XY": ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),   # normal +Z
+    "YZ": ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0]),   # normal +X
+    "ZX": ([0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),   # normal +Y
+}
+
+
+def sketch_plane(plane) -> dict:
+    """'XY' | 'YZ' | 'ZX', or {"name":"XY","origin":[0,0,20]}, or {"origin":p,"x_axis":v,"y_axis":v}. Returns the full frame."""
+    origin = [0.0, 0.0, 0.0]
+    if isinstance(plane, str):
+        name = plane
+    elif isinstance(plane, dict):
+        name = plane.get("name")
+        if plane.get("origin") is not None:
+            origin = point(plane["origin"], "plane.origin")
+        if name is None:
+            x = vector(plane.get("x_axis"), "plane.x_axis")
+            y = vector(plane.get("y_axis"), "plane.y_axis")
+            if _norm(_cross(x, y)) < 1e-9 * _norm(x) * _norm(y):
+                raise bad("plane.x_axis and plane.y_axis must not be parallel")
+            return {"origin": origin, "x_axis": x, "y_axis": y}
+    else:
+        raise bad("plane must be 'XY', 'YZ', 'ZX' or a frame dict")
+    key = str(name).upper()
+    if key not in PLANES:
+        raise bad(f"unknown plane {name!r}", "Use 'XY', 'YZ', 'ZX', or give origin + x_axis + y_axis.")
+    x, y = PLANES[key]
+    return {"origin": origin, "x_axis": list(x), "y_axis": list(y)}
+
+
+def plane_normal(frame: dict) -> list[float]:
+    n = _cross(frame["x_axis"], frame["y_axis"])
+    ln = _norm(n)
+    return [c / ln for c in n]
+
+
+def segments2d(segs, name: str = "segments") -> list[dict]:
+    """Same segment format as `segments`, but points are [x, y] in the sketch plane."""
+    def up(p):
+        if not isinstance(p, (list, tuple)) or len(p) != 2:
+            raise bad(f"{name}: sketch points must be [x, y]")
+        return [p[0], p[1], 0.0]
+    conv = []
+    for sg in (segs if isinstance(segs, (list, tuple)) else []):
+        if not isinstance(sg, dict):
+            conv.append(sg)
+            continue
+        item = dict(sg)
+        for key in ("start", "end", "through", "center"):
+            if item.get(key) is not None:
+                item[key] = up(item[key])
+        item.pop("normal", None)
+        conv.append(item)
+    checked = segments(conv, name)
+    out = []
+    for sg in checked:
+        o = {"type": sg["type"]}
+        for key in ("start", "end", "through", "center"):
+            if key in sg:
+                o[key] = sg[key][:2]
+        if "radius" in sg:
+            o["radius"] = sg["radius"]
+        out.append(o)
+    return out
+
+
+def _profile_points(segs) -> list:
+    pts = []
+    for sg in segs:
+        if sg["type"] == "circle":
+            continue
+        pts += [sg["start"], sg["end"]] + ([sg["through"]] if sg["type"] == "arc" else [])
+    return pts
+
+
+def check_axis_not_crossed(points, axis_point, axis_dir, plane_normal_hint=None) -> None:
+    """Reject a revolve whose profile lies on both sides of the axis (ZW3D would fail with a vague error).
+    Works for 3D points (profile must be coplanar with the axis) and for 2D sketch points."""
+    tol = 1e-7
+    if points and len(points[0]) == 2:
+        d = axis_dir
+        side = [d[0] * (p[1] - axis_point[1]) - d[1] * (p[0] - axis_point[0]) for p in points]
+    else:
+        n = plane_normal_hint
+        if n is None:
+            n = polygon_normal(points) if len(points) >= 3 else None
+        if n is None:
+            return
+        ad = _norm(axis_dir)
+        if abs(_dot(axis_dir, n)) > 1e-6 * ad or abs(_dot(_sub(axis_point, points[0]), n)) > 1e-6 * max(1.0, ad):
+            return  # axis not in the profile plane: crossing is not meaningful here
+        w = _cross(n, axis_dir)
+        side = [_dot(_sub(p, axis_point), w) for p in points]
+    scale = max(1.0, max(abs(x) for x in side))
+    if min(side) < -tol * scale and max(side) > tol * scale:
+        raise bad("The profile crosses the rotation axis (it has points on both sides of it)",
+                  "Keep the whole profile on one side of the axis, or revolve each half separately.")

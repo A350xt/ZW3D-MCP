@@ -390,3 +390,89 @@ def test_errors_reach_the_ai_with_code_and_hint(fake):
     assert "INVALID_INPUT" in texts[0] and "positive" in texts[0]
     assert "WRONG_ROOT_ENV" in texts[1] and "new_part" in texts[1]
     assert "DISABLED" in texts[2] and "ZW3D_MCP_ENABLE_RUN_COMMAND" in texts[2]
+
+
+# ------------------------------------------------------------------ sketches, axis check, honest undo, combine details
+RECT = [{"type": "line", "start": [0, 0], "end": [40, 0]}, {"type": "line", "start": [40, 0], "end": [40, 20]},
+        {"type": "line", "start": [40, 20], "end": [0, 20]}, {"type": "line", "start": [0, 20], "end": [0, 0]}]
+
+
+def test_sketch_extrude_rectangle_on_xy(part):
+    r = server.sketch_extrude("XY", RECT, 10)
+    assert approx(r["volume"], 40 * 20 * 10)
+    assert r["bounding_box"]["min"] == [0, 0, 0] and r["bounding_box"]["max"] == [40, 20, 10]
+    assert r["sketch_id"] and r["dimensions_added"] == 4 and r["dimensions_failed"] == 0
+
+
+def test_sketch_extrude_planes_offset_symmetric_reverse(part):
+    r = server.sketch_extrude({"name": "XY", "origin": [0, 0, 100]}, RECT, 10)
+    assert r["bounding_box"]["min"][2] == pytest.approx(100) and r["bounding_box"]["max"][2] == pytest.approx(110)
+    r = server.sketch_extrude("XY", RECT, 10, symmetric=True)
+    assert r["bounding_box"]["min"][2] == pytest.approx(-5) and r["bounding_box"]["max"][2] == pytest.approx(5)
+    r = server.sketch_extrude("XY", RECT, 10, reverse=True)
+    assert r["bounding_box"]["max"][2] <= 1e-9 and r["bounding_box"]["min"][2] == pytest.approx(-10)
+    r = server.sketch_extrude("YZ", RECT, 10)  # normal +X
+    assert r["bounding_box"]["max"][0] == pytest.approx(10)
+    assert r["bounding_box"]["size"][1] == pytest.approx(40) and r["bounding_box"]["size"][2] == pytest.approx(20)
+
+
+def test_sketch_circle_and_dimensions_off(part):
+    r = server.sketch_extrude("XY", [{"type": "circle", "center": [5, 5], "radius": 10}], 20, dimensions=False)
+    assert approx(r["volume"], math.pi * 100 * 20, rel=1e-3) and r["dimensions_added"] == 0
+
+
+@pytest.mark.parametrize("plane", ["AB", 5, {"origin": [0, 0, 0]}, {"x_axis": [1, 0, 0], "y_axis": [2, 0, 0]}])
+def test_sketch_plane_validation(part, plane):
+    with pytest.raises(ZW3DError) as e:
+        server.sketch_extrude(plane, RECT, 10)
+    assert e.value.code == "INVALID_INPUT"
+
+
+def test_sketch_points_must_be_2d(part):
+    with pytest.raises(ZW3DError):
+        server.sketch_extrude("XY", [{"type": "line", "start": [0, 0, 0], "end": [1, 1, 1]}], 5)
+
+
+def test_sketch_revolve(part):
+    prof = [{"type": "line", "start": [10, 0], "end": [20, 0]}, {"type": "line", "start": [20, 0], "end": [20, 10]},
+            {"type": "line", "start": [20, 10], "end": [10, 10]}, {"type": "line", "start": [10, 10], "end": [10, 0]}]
+    r = server.sketch_revolve("XY", prof, [0, 0], [0, 1])  # axis = sketch Y through the origin
+    assert approx(r["volume"], math.pi * (400 - 100) * 10)
+    assert r["sketch_id"]
+
+
+def test_axis_crossing_is_caught_before_zw3d(part):
+    crossing3d = [[-5, 0, 0], [5, 0, 0], [5, 10, 0], [-5, 10, 0]]
+    with pytest.raises(ZW3DError) as e:
+        server.revolve_polygon(crossing3d, [0, 0, 0], [0, 1, 0])
+    assert e.value.code == "INVALID_INPUT" and "axis" in e.value.message.lower()
+    crossing2d = [{"type": "line", "start": [-5, 0], "end": [5, 0]}, {"type": "line", "start": [5, 0], "end": [5, 10]},
+                  {"type": "line", "start": [5, 10], "end": [-5, 10]}, {"type": "line", "start": [-5, 10], "end": [-5, 0]}]
+    with pytest.raises(ZW3DError):
+        server.sketch_revolve("XY", crossing2d, [0, 0], [0, 1])
+    # touching the axis (one edge on it) is fine
+    ok = [[0, 0, 0], [5, 0, 0], [5, 10, 0], [0, 10, 0]]
+    assert server.revolve_polygon(ok, [0, 0, 0], [0, 1, 0])["volume"] > 0
+
+
+def test_combine_returns_bbox_and_volume(part):
+    server.create_box(corner1=[0, 0, 0], corner2=[10, 10, 10])
+    r = server.create_box(corner1=[2, 2, -1], corner2=[4, 4, 11], combine="remove")
+    assert r["shape_id"] is None and r["shape_details"]
+    d = r["shape_details"][0]
+    assert d["bounding_box"]["size"] and approx(d["volume"], 1000 - 2 * 2 * 10)
+
+
+def test_undo_reports_what_changed(part):
+    a = server.create_box(corner1=[0, 0, 0], corner2=[10, 10, 10])
+    b = server.create_sphere([50, 0, 0], 5)
+    r = server.undo()
+    assert r["removed_shape_ids"] == [b["shape_id"]] and r["added_shape_ids"] == []
+    r = server.redo()
+    assert r["added_shape_ids"] == [b["shape_id"]]
+
+
+def test_non_api_errors_have_no_api_code(part):
+    with pytest.raises(ZW3DError) as e:
+        server.run_command("x")
+    assert e.value.code == "DISABLED" and e.value.api_code is None

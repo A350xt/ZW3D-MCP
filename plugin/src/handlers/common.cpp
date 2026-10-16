@@ -28,6 +28,33 @@ evxBoolType parse_combine(const json& params) {
   invalid_input("combine 取值无效: " + c, "可选: none, add, remove, intersect");
 }
 
+bool is_modeling_method(const std::string& m) {
+  static const char* names[] = {"create_box", "create_cylinder", "create_sphere", "extrude_polygon", "revolve_polygon",
+                                "extrude_profile", "revolve_profile", "sketch_extrude", "sketch_revolve", "boolean",
+                                "fillet_edges", "chamfer_edges", "shell_shape"};
+  for (const char* n : names) if (m == n) return true;
+  return false;
+}
+
+static void rollback_to(int base) {
+  for (int guard = 0; guard < 2000 && cvxXnUndoCount() > base; ++guard)
+    if (cvxUndoRedo(1) != 0) break;
+}
+
+json invoke_handler(const std::string& method, Handler h, const json& params) {
+  if (!is_modeling_method(method)) return h(params);
+  int base = cvxXnUndoCount();
+  json out;
+  try {
+    out = h(params);
+  } catch (...) {
+    rollback_to(base);  // undo everything this call created (curves, sketches, partial features)
+    throw;
+  }
+  if (cvxXnUndoCount() > base + 1) cvxXnBundle(base, method.c_str());  // one tool call == one undo step
+  return out;
+}
+
 DispGuard::DispGuard() { cvxDispState(0, state); }
 DispGuard::~DispGuard() {
   cvxDispState(1, state);  // Option 1 is the safe restore after errors (see zwapi_display.h)
@@ -80,9 +107,14 @@ json creation_result(evxBoolType combine, int id) {
     out = describe_shape(id);
   } else {
     out["shape_id"] = nullptr;
-    out["note"] = "combine 不是 none：新体已并入/切除/求交到现有实体，见 shapes。";
+    out["note"] = "combine 不是 none：新体已并入/切除/求交到现有实体，见 shapes / shape_details。";
   }
   out["shapes"] = inq_shape_ids();
+  if (combine != VX_BOOL_NONE) {
+    json details = json::array();
+    for (int sid : out["shapes"].get<std::vector<int>>()) details.push_back(describe_shape(sid));
+    out["shape_details"] = details;  // bbox + volume of everything that exists now, so the result can be checked at once
+  }
   return out;
 }
 
