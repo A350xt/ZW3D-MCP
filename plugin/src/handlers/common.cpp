@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <cmath>
 #include "handlers.h"
@@ -206,4 +207,21 @@ std::string current_root_utf8() {
   char buf[256] = {0};
   cvxRootInqActive(buf, sizeof(buf));
   return ansi_to_utf8(buf);
+}
+
+std::vector<std::string> shapes_signature() {
+  auto r = [](double x) { return std::fabs(x) < 5e-4 ? 0.0 : x; };  // avoids "-0.000" vs "0.000" noise
+  std::vector<std::string> sig;
+  for (int id : inq_shape_ids()) {
+    svxBndBox b{};
+    if (cvxPartInqShapeBox(id, nullptr, &b) != 0) continue;
+    svxMassProp mp{};
+    double vol = 0, area = 0;
+    if (cvxPartInqShapeMass(id, 0.0, &mp) == 0) { vol = mp.Volume; area = mp.Area; }
+    char buf[320];
+    std::snprintf(buf, sizeof(buf), "%.3f|%.3f|%.3f,%.3f,%.3f|%.3f,%.3f,%.3f", r(vol), r(area), r(b.X.min), r(b.Y.min), r(b.Z.min), r(b.X.max), r(b.Y.max), r(b.Z.max));
+    sig.push_back(buf);
+  }
+  std::sort(sig.begin(), sig.end());
+  return sig;
 }

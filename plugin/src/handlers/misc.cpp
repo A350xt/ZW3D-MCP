@@ -21,6 +21,8 @@ void to_ansi_path(const std::string& utf8, char (&out)[512], const char* what) {
   std::memcpy(out, a.c_str(), a.size() + 1);
 }
 
+void add_regen_notes(json& out, const std::vector<int>& ids_before, const std::vector<std::string>& sig_before);
+
 json variable_json(const svxVariable& v) {
   const char* kind = v.type == VX_VAR_NUM ? (v.sub_type == VX_VAR_DST ? "distance" : v.sub_type == VX_VAR_ANG ? "angle" : "number")
                    : v.type == VX_VAR_STR ? "string" : v.type == VX_VAR_PNT ? "point" : "vector";
@@ -81,6 +83,8 @@ json h_set_variable(const json& p) {
   set_name(v.Name, name, "name");
   check_api(cvxPartVarGet(&v), "cvxPartVarGet");  // loads type/unit of the existing variable
   apply_value(v, p);
+  std::vector<int> ids_before = inq_shape_ids();
+  std::vector<std::string> sig_before = shapes_signature();
   DispGuard guard;
   try {
     check_api(cvxPartVarSet(1, &v, 0), "cvxPartVarSet");  // regenerates the part
@@ -93,6 +97,7 @@ json h_set_variable(const json& p) {
   json details = json::array();
   for (int s : out["shapes"].get<std::vector<int>>()) details.push_back(describe_shape(s));
   out["shape_details"] = details;
+  add_regen_notes(out, ids_before, sig_before);
   return out;
 }
 
@@ -109,6 +114,19 @@ json h_add_variable(const json& p) {
   apply_value(v, p);
   check_api(cvxPartVarAdd(&v), "cvxPartVarAdd");
   return {{"variable", variable_json(v)}};
+}
+
+bool same_id_set(std::vector<int> a, std::vector<int> b);
+
+// Adds the "ids were renumbered" / "nothing changed" remarks used by every regenerating edit.
+void add_regen_notes(json& out, const std::vector<int>& ids_before, const std::vector<std::string>& sig_before) {
+  std::vector<int> after = out["shapes"].get<std::vector<int>>();
+  std::string note;
+  if (!same_id_set(ids_before, after))
+    note += "再生成后实体 id 被整体重新编号：之前拿到的 id 全部失效，请只用本结果 shape_details 里的 id（面和边需重新 list_faces / list_edges）。";
+  if (sig_before == shapes_signature())
+    note += std::string(note.empty() ? "" : " ") + "警告：没有任何实体发生变化（体积、表面积、包围盒都不变），这个变量可能没有驱动任何特征。";
+  if (!note.empty()) out["note"] = note;
 }
 
 // Sketch variables (the driving dimensions of a sketch) live inside the sketch, so enter it, work, and always leave.
@@ -166,6 +184,8 @@ json h_list_sketch_variables(const json& p) {
 
 json h_set_sketch_variable(const json& p) {
   int sk = p.at("sketch_id").get<int>();
+  std::vector<int> ids_before = inq_shape_ids();
+  std::vector<std::string> sig_before = shapes_signature();
   json var;
   {
     SketchSession s(sk);
@@ -183,6 +203,7 @@ json h_set_sketch_variable(const json& p) {
   json details = json::array();
   for (int s2 : out["shapes"].get<std::vector<int>>()) details.push_back(describe_shape(s2));
   out["shape_details"] = details;
+  add_regen_notes(out, ids_before, sig_before);
   return out;
 }
 
@@ -278,24 +299,56 @@ json h_get_feature_data(const json& p) {
   return {{"feature_id", fid}, {"name", op}, {"fields", fields}};
 }
 
+bool same_id_set(std::vector<int> a, std::vector<int> b) {
+  std::sort(a.begin(), a.end());
+  std::sort(b.begin(), b.end());
+  return a == b;
+}
+
+// Current value of a numeric field (angles in degrees), or false if the field cannot be read.
+bool read_field_value(int fid, int field, evxFldType* type, double* value) {
+  try {
+    FeatureFields ff;
+    load_feature(fid, ff);
+    for (int i = 0; i < ff.count; ++i) {
+      if (ff.list[i].fld_id != field) continue;
+      *type = ff.list[i].fld_type;
+      if (ff.list[i].count > 0) {
+        double n = ff.list[i].fld_data[0].Num;
+        *value = *type == VX_FLD_ANG ? n * 180.0 / 3.14159265358979323846 : n;
+        return true;
+      }
+    }
+  } catch (const ApiError&) {
+  }
+  return false;
+}
+
 json h_set_feature_value(const json& p) {
   int fid = p.at("feature_id").get<int>();
   int field = p.at("field_id").get<int>();
   double value = p.at("value").get<double>();
+  bool allow_negative = p.value("allow_negative", false);
   std::string op = entity_name(fid);
   // Find the field first, so the error is specific (unknown field / not numeric) instead of a generic API failure.
   evxFldType type = VX_FLD_NULL;
-  {
+  double old_value = 0;
+  bool has_old = read_field_value(fid, field, &type, &old_value);
+  if (!has_old) {
     FeatureFields ff;
-    load_feature(fid, ff);
+    load_feature(fid, ff);  // throws FEATURE_DATA_UNAVAILABLE if the feature has no data
     bool found = false;
     for (int i = 0; i < ff.count && !found; ++i)
       if (ff.list[i].fld_id == field) { found = true; type = ff.list[i].fld_type; }
     if (!found)
       throw ApiError("FIELD_NOT_FOUND", "特征 " + op + " 没有字段 " + std::to_string(field), "先调用 get_feature_data 查看 field_id。");
-    if (type != VX_FLD_NUM && type != VX_FLD_DST && type != VX_FLD_ANG)
-      throw ApiError("FIELD_NOT_NUMERIC", "字段 " + std::to_string(field) + " 不是数值字段", "只能修改数字、距离、角度字段。");
   }
+  if (type != VX_FLD_NUM && type != VX_FLD_DST && type != VX_FLD_ANG)
+    throw ApiError("FIELD_NOT_NUMERIC", "字段 " + std::to_string(field) + " 不是数值字段", "只能修改数字、距离、角度字段。");
+  if (type == VX_FLD_DST && value < 0 && !allow_negative)
+    throw ApiError("NEGATIVE_DISTANCE", "距离字段不接受负值 " + std::to_string(value) + "（中望3D不会报错，但会让特征反向/翻转）",
+                   "要反向拉伸请用 sketch_extrude 的 reverse，或在 extrude_* 里给 direction。确实需要负距离时传 allow_negative=true。");
+
   svxVariable v;
   std::memset(&v, 0, sizeof(v));
   set_name(v.Name, field_variable_name(op, field), "variable name");
@@ -303,6 +356,8 @@ json h_set_feature_value(const json& p) {
   v.sub_type = type == VX_FLD_DST ? VX_VAR_DST : type == VX_FLD_ANG ? VX_VAR_ANG : VX_VAR_CONS;
   v.unit_type = type == VX_FLD_DST ? VX_UNIT_MILLIMETER : type == VX_FLD_ANG ? VX_UNIT_DEG : 0;
   v.Value = value;  // database units: mm / degrees
+  std::vector<int> ids_before = inq_shape_ids();
+  std::vector<std::string> sig_before = shapes_signature();
   DispGuard guard;
   try {
     check_api(cvxPartVarSet(1, &v, 0), "cvxPartVarSet");  // regenerates the part
@@ -310,10 +365,26 @@ json h_set_feature_value(const json& p) {
     e.hint = "按 " + field_variable_name(op, field) + " 设置特征字段失败：值可能使几何无效（已回滚，模型保持原状），或该字段不能这样修改。原提示: " + e.hint;
     throw;
   }
+
+  // The call "succeeds" even when the field is derived (e.g. a box made from two corner points) and nothing really changes.
+  // Verify instead of trusting it; throwing here makes the transaction wrapper roll the attempt back.
+  double now = 0;
+  evxFldType t2 = type;
+  if (read_field_value(fid, field, &t2, &now) && std::fabs(now - value) > 1e-6 * std::max(1.0, std::fabs(value)))
+    throw ApiError("FIELD_NOT_APPLIED", "字段 " + std::to_string(field) + " 没有被改成 " + std::to_string(value) + "（读回的值是 " + std::to_string(now) + "）",
+                   "这个字段很可能是派生值（例如按两个角点创建的长方体，长度由角点决定）。已回滚。改用该特征的其他字段，或重新创建。");
+  if (sig_before == shapes_signature() && std::fabs(old_value - value) > 1e-9)
+    throw ApiError("NO_EFFECT", "把字段 " + std::to_string(field) + " 改成 " + std::to_string(value) + " 没有改变任何实体（体积、表面积、包围盒都不变）",
+                   "该字段没有驱动几何，可能是派生字段（例如按两个角点建的长方体的“长度”）。已回滚。用 get_feature_data 找真正驱动几何的字段，或删除后用 create_* 重新创建。");
+
   json out = {{"feature_id", fid}, {"field_id", field}, {"value", value}, {"shapes", inq_shape_ids()}};
   json details = json::array();
   for (int s : out["shapes"].get<std::vector<int>>()) details.push_back(describe_shape(s));
   out["shape_details"] = details;
+  if (!same_id_set(ids_before, out["shapes"].get<std::vector<int>>())) {
+    out["ids_renumbered"] = true;
+    out["note"] = "再生成后实体 id 被整体重新编号：之前拿到的 shape_id / face_id / edge_id 全部失效，请只使用本结果 shape_details 里的 id（面和边需重新 list_faces / list_edges）。";
+  }
   return out;
 }
 

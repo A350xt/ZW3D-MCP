@@ -465,7 +465,7 @@ void build() {
   add("mirror",
       "Mirror a solid (shape_id) or features (feature_ids) across a plane: 'XY', 'YZ', 'ZX' (through the origin), {\"name\":\"YZ\",\"origin\":[x,y,z]} for an offset "
       "plane, or {\"origin\":[..],\"normal\":[..]}. For a solid, combine='add' fuses the mirror image into the original (symmetric part), 'none' keeps it as a "
-      "separate body.",
+      "separate body. Fails with MIRROR_NO_RESULT (and rolls back) if the plane coincides with / passes through the solid so that nothing new is produced.",
       schema({{"plane", {{"anyOf", json::array({t_enum({"XY", "YZ", "ZX"}), t_obj()})}}}, {"shape_id", t_int()}, {"feature_ids", t_ids()}, {"combine", t_combine()}},
              {"plane"}),
       [](const json& a) {
@@ -524,12 +524,17 @@ void build() {
   add("set_feature_value",
       "Change a numeric parameter of an existing feature (extrusion depth, fillet radius, hole diameter, ...) and regenerate the model: this is how to resize something "
       "after it was created. Look up field_id with get_feature_data. value is in mm (distance fields), degrees (angle fields) or unitless. Returns the updated shapes "
-      "with bbox/volume; if the new value makes the geometry invalid the change is rolled back and an error with a hint is returned.",
-      schema({{"feature_id", t_int()}, {"field_id", t_int()}, {"value", t_num()}}, {"feature_id", "field_id", "value"}), [](const json& a) {
+      "with bbox/volume; if the new value makes the geometry invalid, or the field turns out to be derived and changes nothing (e.g. the length of a box made from "
+      "two corner points), the change is rolled back and an error with a hint is returned. Negative distances are refused unless allow_negative=true. IMPORTANT: "
+      "regeneration may renumber ALL shape/face/edge ids (the result then has ids_renumbered=true): use only the ids in the returned shape_details and call "
+      "list_faces / list_edges again.",
+      schema({{"feature_id", t_int()}, {"field_id", t_int()}, {"value", t_num()}, {"allow_negative", t_bool("Allow a negative value for a distance field (default false: it flips the feature).")}},
+             {"feature_id", "field_id", "value"}),
+      [](const json& a) {
         const json& f = req(a, "field_id");
         if (!f.is_number_integer() || f.get<long long>() < 0) bad("field_id must be a non-negative integer", "Use a field_id from get_feature_data.");
         return call("set_feature_value", {{"feature_id", val::one_id(req(a, "feature_id"), "feature_id")}, {"field_id", f.get<int>()},
-                                          {"value", val::number(req(a, "value"), "value")}});
+                                          {"value", val::number(req(a, "value"), "value")}, {"allow_negative", bool_or(a, "allow_negative", false)}});
       });
 
   // ============================================================ variables
@@ -538,7 +543,7 @@ void build() {
 
   add("set_variable",
       "Change an existing part variable (give a numeric value in mm/deg, or an expression string) and regenerate the part. Returns the new shapes with bbox/volume so "
-      "the effect can be checked.",
+      "the effect can be checked; a `note` warns if nothing changed. Regeneration may renumber shape/face/edge ids: use the ids in the returned shape_details.",
       schema({{"name", t_str()}, {"value", t_num()}, {"expression", t_str()}}, {"name"}), [](const json& a) {
         std::string name = str_req(a, "name");
         if (has(a, "value") == has(a, "expression")) bad("Give exactly one of value or expression");
@@ -572,7 +577,7 @@ void build() {
 
   add("set_sketch_variable",
       "Edit one sketch dimension and regenerate the model: this is how you resize a feature after the fact. Get names from list_sketch_variables. Returns the updated "
-      "shapes with bbox/volume.",
+      "shapes with bbox/volume. Regeneration may renumber shape/face/edge ids: use the ids in the returned shape_details.",
       schema({{"sketch_id", t_int()}, {"name", t_str()}, {"value", t_num()}, {"expression", t_str()}}, {"sketch_id", "name"}), [](const json& a) {
         if (has(a, "value") == has(a, "expression")) bad("Give exactly one of value or expression");
         json p = {{"sketch_id", val::one_id(req(a, "sketch_id"), "sketch_id")}, {"name", str_req(a, "name")}};

@@ -638,6 +638,7 @@ json h_mirror_shape(const json& p) {
   }
   m.keep = 1;
   std::vector<int> before = inq_shape_ids();
+  std::vector<std::string> sig_before = shapes_signature();
   int n = 0;
   int* ids = nullptr;
   check_api(cvxPartMirrorGeom(&m, &n, &ids), "cvxPartMirrorGeom");
@@ -647,6 +648,12 @@ json h_mirror_shape(const json& p) {
   for (int s : out["shapes"].get<std::vector<int>>())
     if (std::find(before.begin(), before.end(), s) == before.end()) added.push_back(s);
   out["added_shape_ids"] = added;
+  // The call "succeeds" even when the mirror image coincides with the original (plane through / on the solid): nothing is produced.
+  bool nothing = combine == VX_BOOL_NONE ? added.empty() : sig_before == shapes_signature();
+  if (nothing)
+    throw ApiError("MIRROR_NO_RESULT", "镜像没有生成任何新实体",
+                   "镜像平面很可能与原件重合或穿过实体，镜像像与原件完全重叠，被中望3D忽略。换一个不穿过实体的平面（例如偏移的 YZ 平面），"
+                   "并检查 plane 的 origin / normal。已回滚。");
   return out;
 }
 
@@ -664,9 +671,13 @@ json h_mirror_feature(const json& p) {
   m.combine = combine;
   m.keep = 1;
   int id = 0;
+  std::vector<std::string> sig_before = shapes_signature();
   check_api(cvxPartMirrorFtr(&m, &id), "cvxPartMirrorFtr");
   json out = shapes_summary();
   out["feature_id"] = id;
+  if (sig_before == shapes_signature())
+    throw ApiError("MIRROR_NO_RESULT", "特征镜像没有改变任何实体",
+                   "镜像平面很可能与特征重合或特征本身关于该平面对称。换一个平面；已回滚。");
   return out;
 }
 

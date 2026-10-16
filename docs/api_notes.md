@@ -176,3 +176,17 @@ translation that used to live in Python); `plugin/src/mcp/validate.cpp` the geom
 the plugin-internal request envelope `{"ok":..,"result"|"error"}` is now only an in-process contract between the tool table and the handlers.
 Screenshots: the tool layer reads the temp PNG, returns it as an MCP image and always deletes it (only `shot_*.png` in `%TEMP%\zw3d_mcp`).
 The MCP/validation/HTTP layers were exercised offline with a throwaway stub host (not kept in the repository); everything that talks to ZW3D is as verified/unverified as listed above.
+
+## Live findings on the HTTP build (0.3.0) and the fixes
+
+1. **`set_feature_value` on a derived field "succeeds" but changes nothing** (the length of a box built from two corner points: reported OK, bbox unchanged).
+   `cvxPartVarSet` does not report this. Now: the field is read back after the set (`FIELD_NOT_APPLIED` if it differs) and the geometry fingerprint
+   (`shapes_signature()`: volume, area, bbox of every solid, ids ignored) is compared before/after (`NO_EFFECT` if nothing changed although the value did);
+   both throw, so the transaction wrapper rolls the attempt back.
+2. **Regeneration renumbers every shape id** (a box 137 became 4230 after one `set_feature_value`; face/edge ids change too). Ids cannot be compared across a
+   regeneration, hence the fingerprint above. Results of `set_feature_value` / `set_variable` / `set_sketch_variable` now carry a `note` (and
+   `ids_renumbered` for features) and the tool descriptions say to use only the ids in the returned `shape_details`.
+3. **Mirror with a plane that coincides with the original returns success and produces nothing.** Now `MIRROR_NO_RESULT` (rolled back) when no new solid appears
+   (`combine = none`) or the geometry fingerprint is unchanged (`combine = add`, feature mirror).
+4. **A negative value in a distance field silently flips the feature** (extrusion reversed, no error). `set_feature_value` refuses negative distances with
+   `NEGATIVE_DISTANCE` unless `allow_negative=true`.

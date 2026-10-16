@@ -33,6 +33,9 @@ struct DispGuard {
 
 std::vector<int> inq_shape_ids();                // active part's solids
 void require_shape(int id);                     // throws INVALID_INPUT if id is not a solid of the active part
+// Fingerprint of the geometry (volume, area, bounding box of every solid, sorted, ids ignored). Compare before/after an operation
+// to find out whether it changed anything: shape ids are renumbered by regeneration, so ids cannot be compared.
+std::vector<std::string> shapes_signature();
 json describe_shape(int id);                     // {shape_id, bounding_box{min,max,size}, volume, area}
 json describe_shape_or_null(int id);             // same but null if the id no longer exists
 json bbox_json(const svxBndBox& b);
