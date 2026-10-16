@@ -17,7 +17,7 @@
 
 1. **中望3D 只提供 C/C++ API。** 没有 COM/ActiveX、没有 VBA、没有 Python、没有 .NET。
    网上的"中望 MCP"项目（ZWCAD-Mechanical-MCP、zwcad-standard-mcp 等）都是针对**中望CAD**的，靠 COM 从外部进程调用，**这条路在中望3D上走不通，不要参考它们的实现方式**。
-2. 所以必须写一个 **C++ 插件 DLL**，由中望3D加载、运行在中望3D进程内部，再通过本地 socket 与外部的 Python MCP Server 通信。思路与 Blender MCP（插件内起 socket + 外部 MCP 进程）相同。
+2. 所以必须写一个 **C++ 插件 DLL**，由中望3D加载、运行在中望3D进程内部。**DLL 自己就是 MCP 服务端**：内置 HTTP（Streamable HTTP）服务，AI 客户端直接连接，不再需要外部的 Python 进程。
 3. **API 调用一律在中望3D主线程执行。**（这是 CAD 软件的通用规则，官方文档未明确说明，按最保守方式处理。）socket 收发在后台线程，执行必须投递回主线程。
 4. 中望3D内部字符串可能是 **GBK/系统 ANSI 编码**，而 JSON 必须是 UTF-8。所有进出 API 的字符串（文件名、变量名、消息）都要在桥接层转换。
 5. 中望3D 2025 起官方建议优先使用新版接口（`Zw*` 函数、`szw*` 结构体），旧的 `cvx*` 接口不再维护，但仍可用。**MVP 阶段优先用签名已核实的 `cvx*` 接口跑通链路，之后再逐步替换为新接口。**
@@ -27,49 +27,35 @@
 ## 3. 总体架构
 
 ```
-AI Agent (Claude Code / Claude Desktop / Cursor)
-   │  MCP 协议 (stdio)
+AI Agent (Claude Code / Cursor / ...)
+   │  MCP over HTTP：POST http://127.0.0.1:47823/mcp（JSON-RPC）
    ▼
-[A] Python MCP Server  (mcp 官方 Python SDK / FastMCP)
-   │  - 定义 MCP 工具、参数 schema、文档字符串
-   │  - 参数校验、单位说明、把截图 PNG 作为 Image 返回
-   │  TCP 127.0.0.1:47823，每行一个 JSON（NDJSON）
-   ▼
-[B] ZW3D 插件 DLL (C++, x64, MSVC)
-   │  - 后台线程：socket 收发、JSON 解析
+ZW3D 插件 DLL (C++, x64, MSVC) —— 运行在中望3D进程内
+   │  - HTTP 线程：收发请求、Host/Origin/令牌校验、JSON-RPC、工具参数校验与转换
    │  - 主线程：执行 API 调用（通过隐藏窗口消息投递）
    ▼
 中望3D 2025 进程（cvx* / Zw* C API）
 ```
 
-另外还要有：
-
-- **[C] fake_zw3d.py**：一个用 Python 写的假插件，监听同一端口、实现同一协议、返回假数据。用于在**没有中望3D的环境**（包括 Linux）下开发和测试 [A]。
-
-### 推荐目录结构
+### 目录结构
 
 ```
 zw3d-mcp/
 ├── CLAUDE.md                  ← 本文件
-├── plugin/                    ← [B] C++ 插件
+├── plugin/
 │   ├── CMakeLists.txt
 │   ├── src/
 │   │   ├── plugin_main.cpp    ← <DllName>Init / <DllName>Exit、命令注册
-│   │   ├── server.cpp/.h      ← Winsock 服务器（后台线程）
+│   │   ├── server.cpp/.h      ← Winsock HTTP 服务（后台线程）
 │   │   ├── dispatcher.cpp/.h  ← 主线程调度（消息窗口 + 任务队列）
-│   │   ├── handlers/          ← 每类命令一个文件：part.cpp、query.cpp、file.cpp…
+│   │   ├── mcp/               ← mcp.cpp（JSON-RPC）、tools.cpp（工具表：Schema/描述/参数转换）、validate.cpp（参数与几何校验）
+│   │   ├── handlers/          ← 调用中望3D API 的 handler：part.cpp、query.cpp、file.cpp、misc.cpp、common.cpp
 │   │   ├── encoding.cpp/.h    ← UTF-8 ↔ ANSI/GBK
 │   │   └── errors.cpp/.h      ← evxErrors / ZW_API_* → 字符串
 │   └── third_party/json.hpp   ← nlohmann/json（单头文件，MIT）
-├── server/                    ← [A] Python MCP Server
-│   ├── pyproject.toml
-│   ├── zw3d_mcp/
-│   │   ├── server.py          ← MCP 工具定义
-│   │   └── bridge.py          ← TCP 客户端、超时、重连
-│   └── tests/
-│       ├── fake_zw3d.py       ← [C]
-│       └── test_tools.py
+├── scripts/package.ps1        ← 打包发布 zip
 └── docs/
+    ├── INSTALL.md
     └── api_notes.md           ← 开发中核实过的 API 用法记录（持续追加）
 ```
 
@@ -84,7 +70,6 @@ zw3d-mcp/
 | 构建 | CMake ≥ 3.20 |
 | 中望3D | 2025 版本，已安装且能正常启动 |
 | SDK | 中望3D安装目录下的 API 头文件和库：主头文件 **`VxApi.h`**，链接库 **`ZW3D.lib`**。用 CMake 变量 `ZW3D_SDK_DIR` 指向它，不要写死路径 |
-| Python | 3.10+，依赖 `mcp`（官方 SDK），测试用 `pytest` |
 
 **第一件事**：让用户在本机找到 `VxApi.h` 和 `ZW3D.lib` 的实际路径，以及 SDK 自带的示例工程（如果有），记录到 `docs/api_notes.md`。
 
@@ -120,12 +105,12 @@ CMake 要点：
 5. 同一时刻只处理一个请求（串行），不做并发。
 6. 需要验证的风险：中望3D处于模态对话框、或用户正在执行某个命令时，消息是否仍会被派发；API 在"命令进行中"调用是否安全。如有问题，handler 执行前检查状态并返回 `BUSY` 错误。
 
-### 5.3 Socket 服务
+### 5.3 HTTP 服务
 
-- Winsock，只绑定 `127.0.0.1`，端口默认 `47823`，可用环境变量 `ZW3D_MCP_PORT` 修改。
-- 同时只接受一个客户端；新连接到来时断开旧连接。
-- 帧格式：**每行一个 UTF-8 JSON**，以 `\n` 结尾。单条消息上限 16 MB。
-- 不做鉴权（仅本机回环），但要在 README 里说明风险。
+- Winsock，只绑定 `127.0.0.1`，端口默认 `47823`，可用环境变量 `ZW3D_MCP_PORT` 修改。端点：`POST /mcp`（JSON-RPC 2.0，响应为 JSON；GET/DELETE 返回 405）。
+- 校验 `Host` 与 `Origin` 必须是本机回环（防 DNS 重绑定 / 跨站请求）；设置 `ZW3D_MCP_TOKEN` 时要求 `Authorization: Bearer <token>`。
+- 每个连接一个请求（`Connection: close`），请求体上限 16 MB，支持 chunked 与 `Expect: 100-continue`。
+- 默认不做鉴权，但要在 README 里说明风险。
 
 ### 5.4 编码
 
@@ -141,32 +126,19 @@ CMake 要点：
 
 ---
 
-## 6. 通信协议（[A] ↔ [B]，fake_zw3d.py 也必须遵守）
+## 6. 通信协议
 
-请求：
+对外：标准 MCP（`initialize`、`ping`、`tools/list`、`tools/call`）。工具失败返回 `isError: true`，文本为 `[CODE] message (api_code=N) Hint: ...`，让 AI 能读到 code 和提示。
 
-```json
-{"id": "uuid-或递增整数", "method": "extrude", "params": {...}, "timeout_ms": 60000}
-```
-
-成功响应：
-
-```json
-{"id": "...", "ok": true, "result": {...}}
-```
-
-失败响应：
-
-```json
-{"id": "...", "ok": false, "error": {"code": "INVALID_INPUT", "api_code": -31, "message": "...", "hint": "..."}}
-```
+对内（工具表 → handler）：`{"method": "...", "params": {...}}` → `{"ok": true, "result": {...}}` 或
+`{"ok": false, "error": {"code": "INVALID_INPUT", "api_code": -31, "message": "...", "hint": "..."}}`（`api_code` 为 null 表示不是中望3D接口错误）。
 
 约定：
 
 - **单位统一为毫米和度**，在每个 MCP 工具的描述里写明。
-- 所有实体用中望3D返回的整数 ID 引用（`idShape`、`idEnt` 等），在响应里统一命名为 `shape_id`、`curve_id`、`feature_id`。
+- 所有实体用中望3D返回的整数 ID 引用，在响应里统一命名为 `shape_id`、`curve_id`、`feature_id`。
 - 坐标点统一用 `[x, y, z]` 数组。
-- 新增 method 时，**同时**更新：C++ handler、Python 工具、fake_zw3d.py、本文件第 7 节。
+- 新增工具时，**同时**更新：C++ handler、`plugin/src/mcp/tools.cpp` 的工具表、README 工具表、本文件第 7 节。
 
 ---
 
@@ -185,10 +157,10 @@ CMake 要点：
 | `list_shapes` | 列出当前零件所有实体 ID | `cvxPartInqShapes` + `cvxMemFree` |
 | `get_mass_props` | 体积、表面积、质量、重心 | `cvxPartInqShapeMass` + `svxMassProp` |
 | `get_bounding_box` | 包围盒 | `cvxPartInqShapeBox` + `svxBndBox` |
-| `screenshot` | 导出当前视图 PNG；Python 端读文件后作为 MCP Image 返回 | `cvxDispZoomAll` → `cvxFileExportInit(VX_EXPORT_TYPE_IMG, VX_EXPORT_IMG_TYPE_PNG, &data)` → `cvxFileExport` |
+| `screenshot` | 导出当前视图 PNG；插件的 MCP 层读文件后作为 MCP Image 返回 | `cvxDispZoomAll` → `cvxFileExportInit(VX_EXPORT_TYPE_IMG, VX_EXPORT_IMG_TYPE_PNG, &data)` → `cvxFileExport` |
 | `save_part` / `export_step` | 保存 / 另存为 STEP | `cvxFileSave`、`cvxFileSaveAs`、`cvxFileExport(STEP)` |
 
-`screenshot` 的实现要点：插件把 PNG 写到 `%TEMP%\zw3d_mcp\shot_<时间戳>.png`，返回路径；Python 端读取、转 base64、作为 MCP `ImageContent` 返回，并删除临时文件。默认 800×600。
+`screenshot` 的实现要点：插件把 PNG 写到 `%TEMP%\zw3d_mcp\shot_<时间戳>.png`，返回路径；插件的 MCP 层读取、转 base64、作为 MCP `ImageContent` 返回，并删除临时文件。默认 800×600。
 
 ### 7.2 第二阶段
 
@@ -209,7 +181,7 @@ CMake 要点：
 - 中等粒度：一个工具完成一个"设计意图"（如"拉伸一个多边形"），而不是把每个底层 API 一对一暴露。
 - 每个创建类工具都返回新实体 ID，并**附带该实体的包围盒和体积**，让 AI 无需额外调用就能自检。
 - 工具描述（docstring）里写清单位、坐标系约定、常见错误和下一步建议。
-- 参数用 JSON Schema 严格约束（数值范围、数组长度），在 Python 端先校验，减少无意义的往返。
+- 参数用 JSON Schema 严格约束（数值范围、数组长度），在工具表（`plugin/src/mcp/tools.cpp`）里先校验，减少无意义的往返。
 
 ---
 
@@ -355,8 +327,7 @@ cvxFileExport(VX_EXPORT_TYPE_IMG, path_ansi, &data);
 - 验收：一个只调用 `cvxMsgDisp("hello")` 的空插件能被中望3D 2025 加载并显示消息。
 
 **M1：通信链路**
-- 插件：消息窗口调度器 + socket 服务 + `ping`。
-- Python：bridge.py + `ping` 工具；fake_zw3d.py 实现 `ping`。
+- 插件：消息窗口调度器 + HTTP/MCP 服务 + `ping`。
 - 验收：在 Claude Code 里调用 `ping`，返回中望3D当前激活文件名；中望3D界面不卡顿；关闭中望3D不卡死。
 
 **M2：MVP 建模闭环**
@@ -374,8 +345,8 @@ cvxFileExport(VX_EXPORT_TYPE_IMG, path_ansi, &data);
 
 ## 11. 测试
 
-- **Python 层**：`pytest` + fake_zw3d.py，在任意系统上跑；覆盖每个工具的参数校验、正常路径、错误路径、超时。
-- **协议一致性**：用一个 JSON 用例文件（请求 + 期望响应结构），同时跑 fake 和真插件。
+- 插件只能在装有中望3D的机器上运行，仓库里暂不保留离线测试；真机测试通过 MCP 工具手动或由 agent 进行。
+- 协议层（HTTP / JSON-RPC / 参数校验）可以用一个桩执行器在没有中望3D的情况下临时验证，但不入库。
 - 每次修改 C++ 后，提醒用户：关闭中望3D → 重新编译 → 重新加载插件（DLL 被占用时无法覆盖）。
 
 ---
@@ -385,7 +356,7 @@ cvxFileExport(VX_EXPORT_TYPE_IMG, path_ansi, &data);
 1. **不要猜 API。** 任何 `cvx*` / `Zw*` 函数、结构体字段、枚举值，写代码前必须在头文件（或第 9 节第 4 条的绑定文件）里 grep 到原文。查不到就停下来问用户，或让用户在中望3D的 API 助手里查。
 2. 每核实一个 API，把签名、字段含义、注意事项追加到 `docs/api_notes.md`。
 3. 插件代码只能在用户的 Windows 机器上编译。需要编译或测试时，给出明确的命令和操作步骤，让用户执行并贴回输出；不要假设编译通过。
-4. 新增工具时同步修改四处：C++ handler、Python 工具、fake_zw3d.py、本文件第 7 节。
+4. 新增工具时同步修改：C++ handler、`plugin/src/mcp/tools.cpp` 的工具表（Schema + 校验）、README 工具表、本文件第 7 节。
 5. 所有 handler 必须：主线程执行、捕获全部异常、恢复显示状态、释放 API 分配的内存（`cvxMemFree`）。
 6. 先跑通最小链路（M0、M1），再扩展工具。不要一次性写完所有工具再调试。
 7. 遇到"中望CAD"相关资料（ZWCAD、LISP、ZRX、COM），一律忽略，那是另一个产品。

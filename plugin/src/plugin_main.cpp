@@ -4,6 +4,7 @@
 #include "VxApi.h"
 #include "dispatcher.h"
 #include "handlers/handlers.h"
+#include "mcp/mcp.h"
 #include "plugin_info.h"
 #include "server.h"
 
@@ -22,13 +23,16 @@ static void say(const std::string& s) { cvxMsgDisp(s.c_str()); }
 
 static bool start_server() {
   if (server().running()) return true;
+  mcp::set_executor([](const std::string& method, const nlohmann::json& params, int timeout_ms) {
+    return dispatcher().Execute(method, params, timeout_ms);
+  });
   std::string err;
   int port = configured_port();
   if (!server().Start(port, &err)) {
     say("[ZW3D-MCP] start failed: " + err);
     return false;
   }
-  say("[ZW3D-MCP] listening on 127.0.0.1:" + std::to_string(port));
+  say("[ZW3D-MCP] MCP endpoint: http://127.0.0.1:" + std::to_string(port) + "/mcp");
   return true;
 }
 

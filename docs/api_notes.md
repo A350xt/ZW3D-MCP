@@ -164,3 +164,15 @@ Editing: `cvxRootVarSet`'s header says a history operation's input field is addr
 (brackets included). `set_feature_value` builds that name from `cvxEntName(feature)` + `fld_id` and calls `cvxPartVarSet(1, &v, 0)` with
 `type = VX_VAR_NUM`, `sub_type` DST / ANG / CONS (mm / degrees). Unverified: that `cvxEntName` returns the same operation name ZW3D expects
 in the variable name, that field ids are stable between the read and the set, and which field ids a given feature uses (read them from `get_feature_data` on a live feature).
+
+## Architecture change (0.3.0): the DLL is the MCP server
+
+The Python MCP server, the TCP/NDJSON bridge and `fake_zw3d.py` were removed. The plugin now serves MCP over HTTP itself
+(`plugin/src/server.cpp`: POST `/mcp`, one request per connection, loopback only, Host/Origin check, optional bearer token, chunked and
+`Expect: 100-continue` bodies supported; GET/DELETE answer 405 because there is no SSE stream and no session). `plugin/src/mcp/mcp.cpp` implements
+`initialize`, `ping`, `tools/list`, `tools/call` (a tool failure is a result with `isError: true` and text `[CODE] message (api_code=N) Hint: ...`;
+only an unknown tool is a JSON-RPC error). `plugin/src/mcp/tools.cpp` holds the 45 tools (schema, description, and the argument validation /
+translation that used to live in Python); `plugin/src/mcp/validate.cpp` the geometry checks. The handlers and the main-thread dispatcher are unchanged;
+the plugin-internal request envelope `{"ok":..,"result"|"error"}` is now only an in-process contract between the tool table and the handlers.
+Screenshots: the tool layer reads the temp PNG, returns it as an MCP image and always deletes it (only `shot_*.png` in `%TEMP%\zw3d_mcp`).
+The MCP/validation/HTTP layers were exercised offline with a throwaway stub host (not kept in the repository); everything that talks to ZW3D is as verified/unverified as listed above.

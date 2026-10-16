@@ -1,8 +1,8 @@
 <#
 .SYNOPSIS  Builds the release zip: dist\zw3d-mcp-v<version>-win64.zip
-           (plugin Release build + Python wheel + install guide; users copy files by hand). Needs VS 2022, CMake, Python with `build` or setuptools.
+           (the single plugin DLL + install guide; users copy the DLL by hand). Needs VS 2022 and CMake.
 #>
-param([string]$Version = "0.2.0")
+param([string]$Version = "0.3.0")
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $dist = Join-Path $repo "dist"
@@ -18,11 +18,7 @@ cmd /c "`"$vcvars`" >nul && cmake -S `"$repo\plugin`" -B `"$build`" -G Ninja -DC
 if ($LASTEXITCODE -ne 0) { throw "plugin build failed" }
 Copy-Item "$build\zw3dmcp.dll" $stage
 
-# 2. python wheel
-python -m pip wheel "$repo\server" --no-deps -w $stage
-if ($LASTEXITCODE -ne 0) { throw "wheel build failed" }
-
-# 3. scripts + docs
+# 2. docs
 Copy-Item "$repo\README.md" $stage
 Copy-Item "$repo\docs\INSTALL.md" $stage
 Compress-Archive -Path "$stage\*" -DestinationPath "$dist\zw3d-mcp-v$Version-win64.zip"

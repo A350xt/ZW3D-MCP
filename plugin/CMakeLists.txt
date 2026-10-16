@@ -33,6 +33,9 @@ endif()
 add_library(zw3dmcp SHARED
   src/plugin_main.cpp
   src/server.cpp
+  src/mcp/validate.cpp
+  src/mcp/tools.cpp
+  src/mcp/mcp.cpp
   src/dispatcher.cpp
   src/encoding.cpp
   src/errors.cpp

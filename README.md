@@ -1,13 +1,42 @@
 # ZW3D-MCP
 
-Let an AI agent (Claude Code, Claude Desktop, Cursor …) model parts in a **running ZW3D 2025+** and look at the result
-(screenshot, volume, bounding box). Target is ZW3D, **not** ZWCAD.
+Let an AI agent (Claude Code, Cursor …) model parts in a **running ZW3D 2025+** and look at the result (screenshot, volume,
+bounding box). Target is ZW3D, **not** ZWCAD.
+
+The whole MCP server is **one DLL** that runs inside ZW3D and speaks MCP over HTTP (Streamable HTTP, JSON responses):
 
 ```
-AI agent ──MCP/stdio──▶ server/ (Python) ──TCP 127.0.0.1:47823, NDJSON──▶ plugin/ (zw3dmcp.dll inside ZW3D)
+AI agent ──MCP over HTTP: POST http://127.0.0.1:47823/mcp──▶ zw3dmcp.dll (inside ZW3D)
 ```
 
-## 1. Build the plugin (Windows, VS 2022)
+No Python, no Node, no extra process.
+
+## 1. Install
+
+Download `zw3d-mcp-vX.Y.Z-win64.zip` from the [Releases](../../releases), close ZW3D, copy `zw3dmcp.dll` to
+`%APPDATA%\ZWSOFT\ZW3D\ZW3D 2025\custom\apilibs`, start ZW3D. The output window shows `[ZW3D-MCP] MCP endpoint: http://127.0.0.1:47823/mcp`
+(commands `McpStart` / `McpStop` toggle the service). Details and other ways to load the DLL: `docs/INSTALL.md`, `docs/api_notes.md`.
+
+Register the endpoint in your client:
+
+```bash
+claude mcp add --transport http zw3d http://127.0.0.1:47823/mcp        # Claude Code
+```
+
+Cursor: `{"mcpServers": {"zw3d": {"url": "http://127.0.0.1:47823/mcp"}}}`. Clients that only speak stdio (e.g. the Claude Desktop local config)
+need an stdio-to-HTTP bridge such as `npx -y mcp-remote http://127.0.0.1:47823/mcp` (not verified here).
+
+| Env var (set before starting ZW3D) | Meaning |
+|---|---|
+| `ZW3D_MCP_PORT` | port (default 47823) |
+| `ZW3D_MCP_AUTOSTART=0` | do not listen automatically |
+| `ZW3D_MCP_TOKEN` | if set, every request must carry `Authorization: Bearer <token>` |
+| `ZW3D_MCP_ENABLE_RUN_COMMAND=1` | enable the raw `run_command` tool (off by default) |
+
+**Security:** the server binds to 127.0.0.1 only and rejects requests whose `Host` or `Origin` is not loopback (so a web page cannot drive
+ZW3D through your browser). Without `ZW3D_MCP_TOKEN` any local process can still call it, including `run_command` if enabled. Do not expose the port.
+
+## 2. Build from source (Windows, VS 2022)
 
 ```bat
 cd plugin
@@ -15,30 +44,9 @@ cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
 ```
 
-The SDK is found automatically (`C:\Program Files\ZWSOFT\ZW3D <year>`, newest ≥ 2025). Other location:
-`-DZW3D_SDK_DIR="D:\ZW3D 2026"`. Add `-DZW3D_MCP_INSTALL_USER=ON -DZW3D_MCP_YEAR=2025` to copy the DLL into
-`%APPDATA%\ZWSOFT\ZW3D\ZW3D 2025\custom\apilibs` after the build (ZW3D loads it at start-up; **close ZW3D before rebuilding**,
-a loaded DLL cannot be overwritten). Other ways to load it: see `docs/api_notes.md`.
-
-On start-up the plugin prints `[ZW3D-MCP] listening on 127.0.0.1:47823`. Commands `McpStart` / `McpStop` toggle the service.
-
-| Env var (set before starting ZW3D) | Meaning |
-|---|---|
-| `ZW3D_MCP_PORT` | port (default 47823) |
-| `ZW3D_MCP_AUTOSTART=0` | do not listen automatically |
-| `ZW3D_MCP_ENABLE_RUN_COMMAND=1` | enable the raw `run_command` tool (off by default) |
-
-**Security:** the service binds to loopback only and has **no authentication**. Any local process can drive ZW3D
-(including `run_command` if enabled). Do not expose the port.
-
-## 2. Install the MCP server
-
-```bash
-pip install -e server            # needs Python 3.10+, mcp
-claude mcp add zw3d -- python -m zw3d_mcp
-```
-
-Claude Desktop / Cursor: command `python`, args `["-m", "zw3d_mcp"]`. Set `ZW3D_MCP_PORT` for a non-default port.
+The SDK is found automatically (`C:\Program Files\ZWSOFT\ZW3D <year>`, newest ≥ 2025); other location: `-DZW3D_SDK_DIR="D:\ZW3D 2026"`.
+`-DZW3D_MCP_INSTALL_USER=ON -DZW3D_MCP_YEAR=2025` copies the DLL into the apilibs folder after the build (**close ZW3D before rebuilding**, a loaded
+DLL cannot be overwritten). `scripts/package.ps1` builds the release zip.
 
 ## 3. Tools
 
@@ -46,8 +54,7 @@ Units: **millimetres and degrees**; points are `[x, y, z]`. Every modeling tool 
 box and volume, and errors come back as `[CODE] message  Hint: …` so the agent can self-correct. Each modeling call is a single
 undo step and is rolled back completely if it fails.
 
-Status: ✅ = exercised on a real ZW3D 2025 SP2; ⚠️ = implemented from the SDK headers and covered by tests
-against the fake plugin, **not yet run in ZW3D** (see `docs/api_notes.md`).
+Status: ✅ = exercised on a real ZW3D 2025 SP2; ⚠️ = implemented from the SDK headers, **not yet run in ZW3D** (see `docs/api_notes.md`).
 
 **Session and files**
 
@@ -127,16 +134,12 @@ against the fake plugin, **not yet run in ZW3D** (see `docs/api_notes.md`).
 
 Not covered yet: assembly mates/constraints, drawing dimensions/annotations/BOM, sheet metal, weldments, CAM, simulation.
 
-## 4. Test
+## 4. Testing
 
-```bash
-cd server && python -m pytest          # no ZW3D needed: uses tests/fake_zw3d.py
-python server/tests/fake_zw3d.py       # run the fake plugin standalone for manual MCP testing
-```
-
-Live testing against ZW3D (the ✅/⚠️ column above) is done by hand or by an agent through the MCP tools; unverified items and
-live findings are recorded in `docs/api_notes.md`.
+The plugin only runs inside ZW3D, so there is no offline test suite in the repository for now. Live testing is done by hand or by an agent
+through the MCP tools (see the ✅/⚠️ column above); unverified items and live findings are recorded in `docs/api_notes.md`.
 
 ## Layout
 
-`plugin/` C++ plugin · `server/` Python MCP server + tests (incl. `fake_zw3d.py`) · `docs/api_notes.md` · `CLAUDE.md` design doc.
+`plugin/src/mcp/` MCP layer (HTTP-independent protocol, tool table with schemas, validation) · `plugin/src/server.cpp` HTTP server ·
+`plugin/src/handlers/` ZW3D API handlers · `plugin/src/dispatcher.cpp` main-thread dispatcher · `docs/api_notes.md` · `CLAUDE.md` design doc.
