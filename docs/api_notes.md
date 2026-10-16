@@ -2,7 +2,7 @@
 
 Everything under "Verified" was read directly from the local SDK headers
 (`C:\Program Files\ZWSOFT\ZW3D 2025\api\inc\*.h`, 237 files) or the vendor examples. "Unverified" items can only be
-confirmed by running `tools/smoke_test.py` inside ZW3D and are the first thing to check on a new machine.
+confirmed by driving a live ZW3D through the MCP tools and are the first thing to check on a new machine.
 
 ## Environment (M0) — verified
 
@@ -62,7 +62,7 @@ doc comment, e.g. `ZwFeatureBoxCreateByCenter`, `ZwFeatureExtrudeCreate`, `ZwFea
 - Errors (`evxErrors`, `zwapi_util.h`): `ZW_API_NO_ERROR=0`, `ZW_API_WRONG_ROOT_ENV=-6`, `ZW_API_INVALID_INPUT=-31`,
   `ZW_API_CMMD_EXEC_ERROR=-152`, … mapped with hints in `plugin/src/errors.cpp`.
 
-## Unverified on a live ZW3D — check with `tools/smoke_test.py`
+## Unverified on a live ZW3D
 
 1. `Init`/handlers really run on the UI thread and the message-only window receives messages while ZW3D is idle.
    `ping` returns `main_thread` / `handler_thread_id` / `init_thread_id` for this.
@@ -78,13 +78,13 @@ doc comment, e.g. `ZwFeatureBoxCreateByCenter`, `ZwFeatureExtrudeCreate`, `ZwFea
 
 ## Live verification log
 
-2025-10-15, ZW3D 2025 SP2 x64: `tools/smoke_test.py` -> ALL STEPS PASSED.
+2025-10-15, ZW3D 2025 SP2 x64: a scripted run of every MVP tool passed.
 Confirmed: items 1 (handlers + Init on the same UI thread), 3 (`cvxFileNewSingle` -> `.Z3PRT` part, Chinese names), 5 (STEP export of a part file),
 6 (PNG export works, ~130 ms), 7 (fillet, boolean keeps the base id), 8 (Chinese Save As path), 9 (mass units, see above).
 Still open: 2 (modal dialog / command in progress), 4 (default extrusion direction when `direction` is omitted),
 and whether PNG honours Width/Height.
 
-## Batch 2 (read from headers; NOT yet run on a live ZW3D — run `tools/smoke_test.py`)
+## Batch 2 (read from headers; NOT yet run on a live ZW3D)
 
 - Arc/circle profiles: `cvxPartArcInit/cvxPartArc` with `arcType = VX_ARC_THROUGH` (start, end, through as `svxPntOnEntPath` with
   `pntType = VX_FREE_POINT` and `pnt`), and `cvxPartCircleInit/cvxPartCircle` with `type = VX_CIRCLE_THROUGH` and 3 `bndPnts`.
@@ -96,7 +96,7 @@ and whether PNG honours Width/Height.
 - Edge bbox: `cvxPartInqEntBox(idEdge, NULL, &box)`; face surface: `cvxPartInqFaceSrfPrim` (`srfType`: `VX_SF_PRIM_PLN/CYL/...`,
   plane normal = z column `zx,zy,zz` of `pln.form`, sign not guaranteed outward; free NURBS with `cvxSurfaceFree`).
 
-## Batch 3 (from user feedback; headers-based, verify with `tools/smoke_test.py`)
+## Batch 3 (from user feedback; headers-based, verify live)
 
 - **Sketches**: `cvxPartSkNew(svxMatrix *Plane, int *idSketch)` creates AND activates a sketch; geometry via `cvxSkLine2pt`,
   `cvxSkArc3pt(Start, End, Mid)` (note the order), `cvxSkCirRad(Center, R)` with `svxPoint2` in sketch coordinates;
@@ -107,14 +107,14 @@ and whether PNG honours Width/Height.
 - **Undo granularity / failure cleanup**: every modeling handler runs inside `invoke_handler`: `base = cvxXnUndoCount()`;
   on success `cvxXnBundle(base, method)` merges all steps of the call into one; on failure `cvxUndoRedo(1)` is repeated until the
   count is back at `base`, so no loose lines/sketches remain. Open: whether `cvxXnUndoCount` counts exactly the steps `cvxUndoRedo`
-  undoes (the smoke test checks "one undo removes exactly one tool call" and "failed calls leave no step").
+  undoes (to check live: "one undo removes exactly one tool call" and "failed calls leave no step").
 - **Round edge boxes**: `cvxEntBndBox` returns a loose box for circles/arcs (R6 circle gave 18x20.8); `list_edges` now rebuilds the
   box from the curve (frame origin/axes, `R`, `A1..A2` degrees; lines from `P1`/`P2`).
 - `api_code` is `null` for errors that do not come from a ZW3D API call (0 reads as success).
 - Revolve crossing the axis is rejected client-side (profile on both sides of the axis); sketch revolve axis is 2D in sketch frame.
 - STEP files written with a Chinese file name show garbled bytes in the header comment (ZW3D's translator writes GBK); geometry is unaffected.
 
-## Batch 4 (read from headers; NOT yet run on a live ZW3D — `tools/smoke_test.py` has a check for each)
+## Batch 4 (read from headers; NOT yet run on a live ZW3D)
 
 | Tool | API used | Notes / open questions |
 |---|---|---|
@@ -126,7 +126,7 @@ and whether PNG honours Width/Height.
 | `sweep` | `cvxPartSweepInit`, `cvxPartSweep(&d, NULL, &id)` | Profile = curve list of 3D wire; path = curve list with `idPath` = its first curve, `idParent` = the list, `UseParent = 1`. Profile must be perpendicular to the path start. |
 | `loft` | `cvxPartLoftInit`, `cvxPartLoft`, `svxLoftProfile{idParent = curve list, idProfile = its first curve}` | `type = VX_LOFT_PROFS`. |
 | variables | `cvxPartInqVars`, `cvxPartVarGet`, `cvxPartVarSet(1, &v, 0)`, `cvxPartVarAdd` | `type = VX_VAR_NUM`, `sub_type = VX_VAR_DST (1) / VX_VAR_ANG (2) / VX_VAR_CONS (0)`, `unit_type = VX_UNIT_MILLIMETER (1) / VX_UNIT_DEG (8)`. Values are database units (mm, deg). |
-| sketch variables | `cvxSkActivate(id, 0)` ... `cvxSkInqVars`, `cvxSkVarGet`, `cvxSkVarSet(1, &v)` ... `cvxRootExit()` | Leaving the sketch should regenerate the model. Unknown: whether the dimensions that `cvxSkAddConsDim` creates appear here under usable names (the smoke test prints them). |
+| sketch variables | `cvxSkActivate(id, 0)` ... `cvxSkInqVars`, `cvxSkVarGet`, `cvxSkVarSet(1, &v)` ... `cvxRootExit()` | Leaving the sketch should regenerate the model. Unknown: whether the dimensions that `cvxSkAddConsDim` creates appear here under usable names (read them from `get_feature_data` on a live feature). |
 | inner loops | extra `cvxSkLine2pt / cvxSkArc3pt / cvxSkCirRad` calls in the same sketch | ZW3D must treat nested closed loops of one sketch as a hole. |
 | assembly | `cvxFileNewSingle(VX_FILE_ASSEMBLY, VX_NORMAL_ASSEMBLY)`, `cvxCompInsInit`, `cvxCompIns` (`File`, `Part` = file stem, `Frame` translation, `Anchor`), `cvxPartInqComps` | `Part` (root name) is assumed to equal the file stem of a single-root `.Z3PRT`. |
 | drawing | `cvxFileNewSingle(VX_FILE_SHEET)`, `cvxDwgViewLayoutInit`, `cvxDwgViewLayout` with `isIgnoreLoc/Method/Attr = 1` | `name` is a `vxPath` (256 bytes): long paths are rejected. The part must already be saved. |
@@ -163,4 +163,4 @@ Follows the vendor example `15.EditVariable`: `cvxPartInqFtrData(idFeature, 0, &
 Editing: `cvxRootVarSet`'s header says a history operation's input field is addressed by a variable named `<operation_name:field_number>`
 (brackets included). `set_feature_value` builds that name from `cvxEntName(feature)` + `fld_id` and calls `cvxPartVarSet(1, &v, 0)` with
 `type = VX_VAR_NUM`, `sub_type` DST / ANG / CONS (mm / degrees). Unverified: that `cvxEntName` returns the same operation name ZW3D expects
-in the variable name, that field ids are stable between the read and the set, and which field ids a given feature uses (the smoke test prints them).
+in the variable name, that field ids are stable between the read and the set, and which field ids a given feature uses (read them from `get_feature_data` on a live feature).

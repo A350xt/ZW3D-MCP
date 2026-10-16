@@ -46,7 +46,7 @@ Units: **millimetres and degrees**; points are `[x, y, z]`. Every modeling tool 
 box and volume, and errors come back as `[CODE] message  Hint: …` so the agent can self-correct. Each modeling call is a single
 undo step and is rolled back completely if it fails.
 
-Status: ✅ = exercised on a real ZW3D 2025 SP2 (`tools/smoke_test.py`); ⚠️ = implemented from the SDK headers and covered by tests
+Status: ✅ = exercised on a real ZW3D 2025 SP2; ⚠️ = implemented from the SDK headers and covered by tests
 against the fake plugin, **not yet run in ZW3D** (see `docs/api_notes.md`).
 
 **Session and files**
@@ -132,12 +132,11 @@ Not covered yet: assembly mates/constraints, drawing dimensions/annotations/BOM,
 ```bash
 cd server && python -m pytest          # no ZW3D needed: uses tests/fake_zw3d.py
 python server/tests/fake_zw3d.py       # run the fake plugin standalone for manual MCP testing
-python tools/smoke_test.py             # on the ZW3D machine, plugin loaded: exercises every method
 ```
 
-Status: `tools/smoke_test.py` passes end-to-end on ZW3D 2025 SP2 (all MVP tools, Chinese file names/paths, error paths).
-Remaining unverified items are listed in `docs/api_notes.md`.
+Live testing against ZW3D (the ✅/⚠️ column above) is done by hand or by an agent through the MCP tools; unverified items and
+live findings are recorded in `docs/api_notes.md`.
 
 ## Layout
 
-`plugin/` C++ plugin · `server/` Python MCP server + tests (incl. `fake_zw3d.py`) · `tools/smoke_test.py` · `docs/api_notes.md` · `CLAUDE.md` design doc.
+`plugin/` C++ plugin · `server/` Python MCP server + tests (incl. `fake_zw3d.py`) · `docs/api_notes.md` · `CLAUDE.md` design doc.

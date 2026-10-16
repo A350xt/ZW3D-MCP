@@ -245,7 +245,7 @@ CASES = pathlib.Path(__file__).with_name("protocol_cases.json")
 
 @pytest.mark.parametrize("case", json.loads(CASES.read_text(encoding="utf-8")), ids=lambda c: c["name"])
 def test_protocol_cases(fake, case):
-    """The same file is replayed against the real plugin by tools/smoke_test.py --cases."""
+    """These cases describe the protocol; replay them against the real plugin to check it matches the fake."""
     b = Bridge("127.0.0.1", fake.port)
     last = None
     for step in case["steps"]:

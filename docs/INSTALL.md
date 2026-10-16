@@ -23,7 +23,7 @@
 6. 注册 MCP 服务端：
    - Claude Code：`claude mcp add zw3d -- python -m zw3d_mcp`
    - Claude Desktop / Cursor：command=`python`，args=`["-m","zw3d_mcp"]`
-7. 验证：对 AI 说“ping 一下中望3D”，或在源码仓库里运行 `python tools/smoke_test.py`。
+7. 验证：对 AI 说“ping 一下中望3D”。
 
 ## 卸载 Uninstall
 关闭中望3D，删除 `apilibs` 里的 `zw3dmcp.dll`，再运行 `pip uninstall zw3d-mcp`。
