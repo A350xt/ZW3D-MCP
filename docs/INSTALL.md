@@ -16,7 +16,7 @@
    其他加载方式（应用程序管理器手动加载、装进安装目录的 `apilibs`）见 `docs/api_notes.md`。
 4. 安装 Python 服务端：
    ```
-   pip install zw3d_mcp-0.1.0-py3-none-any.whl
+   pip install zw3d_mcp-0.2.0-py3-none-any.whl
    ```
 5. 启动中望3D，输出窗口应显示 `[ZW3D-MCP] listening on 127.0.0.1:47823`。
    若没有：在命令栏输入 `McpStart`，或用应用程序管理器手动加载该 DLL。
