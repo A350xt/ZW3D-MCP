@@ -16,7 +16,8 @@ class Dispatcher {
  public:
   bool Create();          // main thread only
   void Shutdown();        // main thread: fails pending jobs, wakes waiters
-  void Destroy();         // main thread: destroys the window (call after the server thread has been joined)
+  void Resume() { stopping_ = false; }  // main thread: re-enable after a Shutdown() used only to unblock Server::Stop() (McpStop)
+  void Destroy();       // main thread: destroys the window (call after the server thread has been joined)
   json Execute(const std::string& method, const json& params, int timeout_ms);  // any thread; returns the full response body
   DWORD main_thread_id() const { return main_tid_; }
   static DWORD current_main_thread_id();

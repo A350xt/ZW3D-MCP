@@ -118,7 +118,7 @@ bool decode_chunked(const std::string& buf, std::string* out, bool* complete) {
 
 int check_request_headers(int port, const std::string& host, const std::string& origin, const std::string& authorization, const std::string& token) {
   (void)port;
-  if (host.empty() || !is_loopback_host(host_of(host))) return 403;  // DNS rebinding: the Host must name the loopback interface
+  if (host.empty() || host.find('@') != std::string::npos || !is_loopback_host(host_of(host))) return 403;  // DNS rebinding: the Host must name the loopback interface
   if (!origin.empty()) {
     // Origin: scheme://host[:port]. Anything else (including "null") is a foreign page.
     size_t se = origin.find("://");
@@ -126,7 +126,7 @@ int check_request_headers(int port, const std::string& host, const std::string& 
     std::string rest = origin.substr(se + 3);
     size_t slash = rest.find('/');
     if (slash != std::string::npos) rest = rest.substr(0, slash);
-    if (!is_loopback_host(host_of(rest))) return 403;
+    if (rest.find('@') != std::string::npos || !is_loopback_host(host_of(rest))) return 403;
   }
   if (!token.empty() && trim(authorization) != "Bearer " + token) return 401;
   return 0;
@@ -204,7 +204,7 @@ void Server::Loop() {
 // One request per connection (Connection: close). Calls into the plugin block this thread until ZW3D's main thread has run them.
 void Server::Serve(unsigned long long client) {
   SOCKET s = (SOCKET)client;
-  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
   std::string buf;
   if (!read_until(s, buf, kMaxHeader, deadline, stop_, [](const std::string& b) { return b.find("\r\n\r\n") != std::string::npos; })) {
     if (!buf.empty()) respond(s, 400, jsonrpc_error_body(-32600, "incomplete HTTP request"));

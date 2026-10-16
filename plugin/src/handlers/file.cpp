@@ -79,7 +79,7 @@ void cleanup_screenshots(int older_than_s) {
   try {
     std::wstring dir = screenshot_dir();
     WIN32_FIND_DATAW fd;
-    HANDLE h = FindFirstFileW((dir + L"\shot_*.png").c_str(), &fd);
+    HANDLE h = FindFirstFileW((dir + L"\\shot_*.png").c_str(), &fd);
     if (h != INVALID_HANDLE_VALUE) {
       FILETIME now_ft;
       GetSystemTimeAsFileTime(&now_ft);

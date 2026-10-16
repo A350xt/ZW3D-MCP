@@ -43,7 +43,10 @@ static int McpStart(int) {
 }
 
 static int McpStop(int) {
+  // Stop() joins the socket thread, which may be waiting for this (main) thread inside Execute(): release it first.
+  dispatcher().Shutdown();
   server().Stop();
+  dispatcher().Resume();
   say("[ZW3D-MCP] stopped");
   return 0;
 }
