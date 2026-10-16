@@ -20,6 +20,7 @@ Copy-Item "$build\zw3dmcp.dll" $stage
 
 # 2. docs
 Copy-Item "$repo\README.md" $stage
+Copy-Item "$repo\README.zh-CN.md" $stage
 Copy-Item "$repo\docs\INSTALL.md" $stage
 Compress-Archive -Path "$stage\*" -DestinationPath "$dist\zw3d-mcp-v$Version-win64.zip"
 Get-FileHash "$dist\zw3d-mcp-v$Version-win64.zip" -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } | Set-Content "$dist\SHA256SUMS.txt"
