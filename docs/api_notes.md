@@ -83,3 +83,15 @@ Confirmed: items 1 (handlers + Init on the same UI thread), 3 (`cvxFileNewSingle
 6 (PNG export works, ~130 ms), 7 (fillet, boolean keeps the base id), 8 (Chinese Save As path), 9 (mass units, see above).
 Still open: 2 (modal dialog / command in progress), 4 (default extrusion direction when `direction` is omitted),
 and whether PNG honours Width/Height.
+
+## Batch 2 (read from headers; NOT yet run on a live ZW3D — run `tools/smoke_test.py`)
+
+- Arc/circle profiles: `cvxPartArcInit/cvxPartArc` with `arcType = VX_ARC_THROUGH` (start, end, through as `svxPntOnEntPath` with
+  `pntType = VX_FREE_POINT` and `pnt`), and `cvxPartCircleInit/cvxPartCircle` with `type = VX_CIRCLE_THROUGH` and 3 `bndPnts`.
+  Three free points make both plane-independent. `svxPntOnEntPath` is zeroed with memset before use.
+- Chamfer: `cvxPartChamferAllInit(svxChamFlltData*)`, `type = VX_CHAMFLLT_SYMMETRIC | VX_CHAMFLLT_ASYMMETRIC`, `nEdges`, `idEdge`, `setback1/2`; `cvxPartChamferAll(&data, &idFeature)`.
+- Shell: `cvxPartShellInit(svxShellData*)`, `idShape`, `dThick`, `cntOpenFace`, `pIdOpenFace`; `cvxPartShell(&data, &idFeature)`.
+- Undo/redo: `cvxUndoRedo(int Undo)` (1 = undo, 0 = redo), one operation per call. Open question: whether one MCP tool call
+  (e.g. a polygon extrude = N lines + curve list + extrude) is one undo step or several.
+- Edge bbox: `cvxPartInqEntBox(idEdge, NULL, &box)`; face surface: `cvxPartInqFaceSrfPrim` (`srfType`: `VX_SF_PRIM_PLN/CYL/...`,
+  plane normal = z column `zx,zy,zz` of `pln.form`, sign not guaranteed outward; free NURBS with `cvxSurfaceFree`).

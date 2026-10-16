@@ -240,3 +240,89 @@ def test_protocol_cases(fake, case):
             assert last["error"]["code"] == step["expect_error_code"]
         for key in step.get("expect_keys", []):
             assert key in last["result"], (key, last)
+
+
+# ------------------------------------------------------------------ round profiles, chamfer, shell, undo
+def test_extrude_circle_profile_matches_cylinder(part):
+    r = server.extrude_profile([{"type": "circle", "center": [0, 0, 0], "radius": 15}], 40, direction=[0, 0, 1])
+    assert approx(r["volume"], math.pi * 15 ** 2 * 40, rel=1e-3)
+
+
+def test_extrude_slot_with_arcs(part):
+    # 40 x 20 stadium: two lines + two half-circle arcs (r=10)
+    segs = [
+        {"type": "line", "start": [0, 0, 0], "end": [40, 0, 0]},
+        {"type": "arc", "start": [40, 0, 0], "through": [50, 10, 0], "end": [40, 20, 0]},
+        {"type": "line", "start": [40, 20, 0], "end": [0, 20, 0]},
+        {"type": "arc", "start": [0, 20, 0], "through": [-10, 10, 0], "end": [0, 0, 0]},
+    ]
+    r = server.extrude_profile(segs, 5, direction=[0, 0, 1])
+    assert approx(r["volume"], (40 * 20 + math.pi * 100) * 5, rel=2e-3)
+
+
+def test_hole_by_circle_remove(part):
+    server.create_box(corner1=[0, 0, 0], corner2=[100, 60, 20])
+    server.extrude_profile([{"type": "circle", "center": [50, 30, -1], "radius": 15}], 22,
+                           direction=[0, 0, 1], combine="remove")
+    vol = server.list_shapes()["shapes"][0]["volume"]
+    # fake removes by bbox overlap (30x30x20); real ZW3D gives the exact cylinder
+    assert vol < 120000
+
+
+def test_revolve_profile_arc(part):
+    segs = [{"type": "line", "start": [10, 0, 0], "end": [20, 0, 0]},
+            {"type": "line", "start": [20, 0, 0], "end": [20, 10, 0]},
+            {"type": "line", "start": [20, 10, 0], "end": [10, 10, 0]},
+            {"type": "line", "start": [10, 10, 0], "end": [10, 0, 0]}]
+    r = server.revolve_profile(segs, [0, 0, 0], [0, 1, 0])
+    assert approx(r["volume"], math.pi * (400 - 100) * 10)
+
+
+@pytest.mark.parametrize("segs", [
+    [],
+    [{"type": "spline"}],
+    [{"type": "line", "start": [0, 0, 0], "end": [1, 0, 0]}, {"type": "line", "start": [5, 5, 0], "end": [0, 0, 0]}],
+    [{"type": "arc", "start": [0, 0, 0], "through": [1, 0, 0], "end": [2, 0, 0]}],
+    [{"type": "circle", "center": [0, 0, 0], "radius": 5}, {"type": "line", "start": [0, 0, 0], "end": [1, 0, 0]}],
+    [{"type": "circle", "center": [0, 0, 0], "radius": -5}],
+])
+def test_profile_validation(part, segs):
+    with pytest.raises(ZW3DError) as e:
+        server.extrude_profile(segs, 5)
+    assert e.value.code == "INVALID_INPUT"
+
+
+def test_chamfer(part):
+    b = server.create_box(corner1=[0, 0, 0], corner2=[100, 60, 20])
+    r = server.chamfer_edges(b["shape_id"], 2)
+    assert r["volume"] < 120000 and r["edge_count"] == 12
+    with pytest.raises(ZW3DError) as e:
+        server.chamfer_edges(b["shape_id"], 15)
+    assert "smaller" in e.value.hint
+
+
+def test_shell_open_box(part):
+    b = server.create_box(corner1=[0, 0, 0], corner2=[100, 60, 20])
+    faces = server.list_faces(b["shape_id"])["faces"]
+    top = [f for f in faces if f.get("plane_normal") == [0.0, 0.0, 1.0] and f["bounding_box"]["min"][2] == 20][0]
+    r = server.shell_shape(b["shape_id"], 2, open_face_ids=[top["face_id"]])
+    # box 100x60x20, wall 2, top open: outer - inner(96 x 56 x 18)
+    assert approx(r["volume"], 120000 - 96 * 56 * 18)
+    with pytest.raises(ZW3DError):
+        server.shell_shape(b["shape_id"], 0)
+
+
+def test_undo_redo(part):
+    server.create_box(corner1=[0, 0, 0], corner2=[10, 10, 10])
+    server.create_sphere([50, 0, 0], 5)
+    assert server.list_shapes()["count"] == 2
+    assert server.undo()["steps_done"] == 1
+    assert server.list_shapes()["count"] == 1
+    assert server.redo()["steps_done"] == 1
+    assert server.list_shapes()["count"] == 2
+    server.undo(2)
+    with pytest.raises(ZW3DError) as e:
+        server.undo()
+    assert e.value.code == "NOTHING_TO_DO"
+    with pytest.raises(ZW3DError):
+        server.undo(0)

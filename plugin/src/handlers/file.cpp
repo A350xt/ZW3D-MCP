@@ -94,6 +94,19 @@ json h_screenshot(const json& p) {
   return {{"path", path_utf8}, {"width", w}, {"height", h}};
 }
 
+json h_undo_redo(const json& p, bool undo) {
+  int steps = p.value("steps", 1);
+  if (steps < 1 || steps > 50) invalid_input("steps 必须在 1..50 之间");
+  int done = 0;
+  for (; done < steps; ++done) {
+    if (cvxUndoRedo(undo ? 1 : 0) != 0) break;
+  }
+  if (done == 0) throw ApiError("NOTHING_TO_DO", undo ? "没有可撤销的操作" : "没有可重做的操作", "");
+  return {{"steps_done", done}, {"shapes", inq_shape_ids()}};
+}
+json h_undo(const json& p) { return h_undo_redo(p, true); }
+json h_redo(const json& p) { return h_undo_redo(p, false); }
+
 json h_run_command(const json& p) {
   const char* en = std::getenv("ZW3D_MCP_ENABLE_RUN_COMMAND");
   if (!en || std::string(en) != "1")
@@ -111,4 +124,6 @@ void register_file_handlers(std::map<std::string, Handler>& m) {
   m["export_step"] = h_export_step;
   m["screenshot"] = h_screenshot;
   m["run_command"] = h_run_command;
+  m["undo"] = h_undo;
+  m["redo"] = h_redo;
 }

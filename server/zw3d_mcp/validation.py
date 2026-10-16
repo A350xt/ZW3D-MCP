@@ -100,3 +100,43 @@ def id_list(ids: Sequence[int], name: str, minimum: int = 1) -> list[int]:
             raise bad(f"{name} contains an invalid id: {v!r}", "Ids are positive integers returned by earlier calls.")
         out.append(v)
     return out
+
+
+def segments(segs, name: str = "segments") -> list[dict]:
+    """Validate a profile made of line / arc / circle segments (one closed loop, or a single circle)."""
+    if not isinstance(segs, (list, tuple)) or not segs:
+        raise bad(f"{name} must be a non-empty list of segments",
+                  'Each segment is {"type":"line","start":p,"end":p}, {"type":"arc","start":p,"through":p,"end":p} '
+                  'or {"type":"circle","center":p,"radius":r,"normal":[0,0,1]}.')
+    out = []
+    for i, sg in enumerate(segs):
+        if not isinstance(sg, dict) or sg.get("type") not in ("line", "arc", "circle"):
+            raise bad(f"{name}[{i}].type must be 'line', 'arc' or 'circle'")
+        t = sg["type"]
+        if t == "circle":
+            item = {"type": t, "center": point(sg.get("center"), f"{name}[{i}].center"),
+                    "radius": positive(sg.get("radius"), f"{name}[{i}].radius")}
+            item["normal"] = vector(sg["normal"], f"{name}[{i}].normal") if sg.get("normal") is not None else [0.0, 0.0, 1.0]
+        else:
+            item = {"type": t, "start": point(sg.get("start"), f"{name}[{i}].start"),
+                    "end": point(sg.get("end"), f"{name}[{i}].end")}
+            if t == "arc":
+                item["through"] = point(sg.get("through"), f"{name}[{i}].through")
+                a, b, c = item["start"], item["through"], item["end"]
+                if _norm(_cross(_sub(b, a), _sub(c, a))) < 1e-9:
+                    raise bad(f"{name}[{i}]: start, through and end are collinear", "Pick a through point off the chord.")
+            elif _norm(_sub(item["start"], item["end"])) < 1e-9:
+                raise bad(f"{name}[{i}]: zero-length line")
+        out.append(item)
+    if any(sg["type"] == "circle" for sg in out):
+        if len(out) != 1:
+            raise bad("A circle must be the only segment of a profile",
+                      "Make one profile call per circle, or combine with combine='remove' for holes.")
+        return out
+    # closed chain check: every end meets the next start (in any order is not supported)
+    for i, sg in enumerate(out):
+        nxt = out[(i + 1) % len(out)]
+        if _norm(_sub(sg["end"], nxt["start"])) > 1e-6:
+            raise bad(f"{name}: segment {i} does not end where segment {(i + 1) % len(out)} starts",
+                      "List segments in order around the outline; the last end must equal the first start.")
+    return out

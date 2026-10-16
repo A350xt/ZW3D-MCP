@@ -1,5 +1,6 @@
 // Read-only handlers (no model changes, so no DispGuard) and the method registry.
 #include <algorithm>
+#include <cstring>
 #include "handlers.h"
 #include "../dispatcher.h"
 #include "../errors.h"
@@ -36,6 +37,30 @@ json h_list_faces(const json& p) {
     svxBndBox box{};
     json item = {{"face_id", f}};
     if (cvxPartInqFaceBox(f, &box) == 0) item["bounding_box"] = bbox_json(box);
+    svxSrfPrim sp;
+    std::memset(&sp, 0, sizeof(sp));
+    if (cvxPartInqFaceSrfPrim(f, &sp) == 0) {
+      switch (sp.srfType) {
+        case VX_SF_PRIM_PLN: {
+          const svxMatrix& m = sp.srfData.pln.form;
+          item["surface"] = "plane";
+          item["plane_normal"] = {m.zx, m.zy, m.zz};  // z axis of the plane frame; sign may not be outward
+          break;
+        }
+        case VX_SF_PRIM_CYL: {
+          const svxMatrix& m = sp.srfData.cyl.form;
+          item["surface"] = "cylinder";
+          item["radius"] = sp.srfData.cyl.radius;
+          item["axis"] = {m.zx, m.zy, m.zz};
+          break;
+        }
+        case VX_SF_PRIM_SPH: item["surface"] = "sphere"; break;
+        case VX_SF_PRIM_CON: item["surface"] = "cone"; break;
+        case VX_SF_PRIM_TORUS: item["surface"] = "torus"; break;
+        case VX_SF_PRIM_NURB: item["surface"] = "nurbs"; cvxSurfaceFree(&sp.srfData.srf); break;
+        default: item["surface"] = "other"; break;
+      }
+    }
     list.push_back(item);
   }
   return {{"shape_id", shape}, {"count", faces.size()}, {"faces", list}};
@@ -49,7 +74,14 @@ json h_list_edges(const json& p) {
   check_api(cvxPartInqShapeEdges(shape, &n, &ids), "cvxPartInqShapeEdges");
   std::vector<int> edges(ids, ids + n);
   if (ids) cvxMemFree(reinterpret_cast<void**>(&ids));
-  return {{"shape_id", shape}, {"count", edges.size()}, {"edge_ids", edges}};
+  json detail = json::array();
+  for (int e : edges) {
+    json item = {{"edge_id", e}};
+    svxBndBox box{};
+    if (cvxPartInqEntBox(e, nullptr, &box) == 0) item["bounding_box"] = bbox_json(box);
+    detail.push_back(item);
+  }
+  return {{"shape_id", shape}, {"count", edges.size()}, {"edge_ids", edges}, {"edges", detail}};
 }
 
 json h_get_mass_props(const json& p) {

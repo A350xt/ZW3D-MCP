@@ -8,6 +8,7 @@ overlap, exact only for axis-aligned boxes). It exists to develop and test the P
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import math
 import os
@@ -52,6 +53,15 @@ def _poly_centroid(pts):
     return _mul(c, 1 / tot)
 
 
+def _circumcenter(a, b, c):
+    ab, ac = _sub(b, a), _sub(c, a)
+    n = _cross(ab, ac)
+    d = 2 * _dot(n, n)
+    t1 = _mul(_cross(n, ab), _dot(ac, ac))   # (|ac|^2 (n x ab) + |ab|^2 (ac x n)) / (2|n|^2)
+    t2 = _mul(_cross(ac, n), _dot(ab, ab))
+    return _add(a, _mul(_add(t1, t2), 1 / d))
+
+
 def _overlap(a, b):
     lo = [max(a["min"][i], b["min"][i]) for i in range(3)]
     hi = [min(a["max"][i], b["max"][i]) for i in range(3)]
@@ -92,7 +102,15 @@ class Fake:
             "list_faces": self.list_faces, "list_edges": self.list_edges, "get_mass_props": self.get_mass_props,
             "get_bounding_box": self.get_bounding_box, "screenshot": self.screenshot,
             "run_command": self.run_command, "_sleep": self._sleep,
+            "extrude_profile": self.extrude_profile, "revolve_profile": self.revolve_profile,
+            "chamfer_edges": self.chamfer_edges, "shell_shape": self.shell_shape,
+            "undo": self.undo, "redo": self.redo,
         }
+        self.mutating = {"create_box", "create_cylinder", "create_sphere", "extrude_polygon", "revolve_polygon",
+                         "extrude_profile", "revolve_profile", "boolean", "fillet_edges", "chamfer_edges",
+                         "shell_shape"}
+        self.undo_stack: list = []
+        self.redo_stack: list = []
 
     # -- helpers ---------------------------------------------------------------
     def need_part(self):
@@ -192,8 +210,19 @@ class Fake:
             raise ApiError("INVALID_INPUT", "Box size must be positive", "", -31)
         bb = {"min": [c[i] - sz[i] / 2 for i in range(3)], "max": [c[i] + sz[i] / 2 for i in range(3)]}
         x, y, z = sz
+        faces = []
+        for ax in range(3):
+            for side in ("min", "max"):
+                lo, hi = list(bb["min"]), list(bb["max"])
+                if side == "min":
+                    hi[ax] = lo[ax]
+                else:
+                    lo[ax] = hi[ax]
+                n = [0.0, 0.0, 0.0]
+                n[ax] = 1.0
+                faces.append({"min": lo, "max": hi, "normal": n})
         return self.add_shape("box", bb, x * y * z, 2 * (x*y + y*z + x*z), [x]*4 + [y]*4 + [z]*4,
-                              [bb] * 6, p.get("combine", "none"))
+                              faces, p.get("combine", "none"))
 
     def create_cylinder(self, p):
         self.need_part()
@@ -264,6 +293,99 @@ class Fake:
         edges = [_len(_sub(pts[i], pts[(i+1) % len(pts)])) for i in range(len(pts))]
         return self.add_shape("revolve", bb, vol, 2*area, edges, [bb]*len(pts), p.get("combine", "none"))
 
+    @staticmethod
+    def _segments_to_polygon(segs):
+        """Sample lines/arcs/circles into a polygon (fake only; circles use 2048 vertices)."""
+        if segs[0]["type"] == "circle":
+            c, r, n = segs[0]["center"], segs[0]["radius"], _unit(segs[0]["normal"])
+            t = [0, 0, 1] if abs(n[2]) < 0.9 else [1, 0, 0]
+            u = _unit(_cross(n, t))
+            w = _cross(n, u)
+            return [_add(c, _add(_mul(u, r * math.cos(a)), _mul(w, r * math.sin(a))))
+                    for a in (2 * math.pi * k / 2048 for k in range(2048))]
+        pts = []
+        for sg in segs:
+            pts.append(sg["start"])
+            if sg["type"] == "arc":
+                a, b, c = sg["start"], sg["through"], sg["end"]
+                ab, ac = _sub(b, a), _sub(c, a)
+                cen = _circumcenter(a, b, c)
+                r = _len(_sub(a, cen))
+                u = _unit(_sub(a, cen))
+                n = _unit(_cross(ab, ac))
+                w = _cross(n, u)
+
+                def ang(q):
+                    d_ = _sub(q, cen)
+                    return math.atan2(_dot(d_, w), _dot(d_, u)) % (2 * math.pi)
+                sweep = ang(c)  # a -> b -> c runs counter-clockwise about n = ab x ac
+                for k in range(1, 256):
+                    th = sweep * k / 256
+                    pts.append(_add(cen, _add(_mul(u, r * math.cos(th)), _mul(w, r * math.sin(th)))))
+        return pts
+
+    def extrude_profile(self, p):
+        q = dict(p)
+        q["points"] = self._segments_to_polygon(p["segments"])
+        return self.extrude_polygon(q)
+
+    def revolve_profile(self, p):
+        q = dict(p)
+        q["points"] = self._segments_to_polygon(p["segments"])
+        return self.revolve_polygon(q)
+
+    def chamfer_edges(self, p):
+        sh = self.shape(p["shape_id"])
+        d1, d2 = p["distance"], p.get("distance2") or p["distance"]
+        ids = p.get("edge_ids") or sh["edges"]
+        for e in ids:
+            if e not in self.s.edges or self.s.edges[e][0] != p["shape_id"]:
+                raise ApiError("INVALID_INPUT", f"edge {e} does not belong to shape {p['shape_id']}", "Use list_edges.", -31)
+        if any(max(d1, d2) * 2 > self.s.edges[e][1] for e in ids):
+            raise ApiError("CMMD_EXEC_ERROR", "Chamfer failed: distance too large", "Use a smaller distance.", -152)
+        sh["volume"] = max(sh["volume"] - sum(d1 * d2 / 2 * self.s.edges[e][1] for e in ids), 0.0)
+        return {**self.describe(p["shape_id"]), "edge_count": len(ids), "shapes": sorted(self.s.shapes)}
+
+    def shell_shape(self, p):
+        sh = self.shape(p["shape_id"])
+        t = p["thickness"]
+        bb = sh["bbox"]
+        dims = [bb["max"][i] - bb["min"][i] for i in range(3)]
+        if sh["kind"] != "box":
+            raise ApiError("CMMD_EXEC_ERROR", "fake shell supports boxes only", "", -152)
+        if any(2 * t >= d for d in dims):
+            raise ApiError("CMMD_EXEC_ERROR", "Shell failed: thickness too large", "Use a thinner wall.", -152)
+        inner = list(dims)
+        for i in range(3):
+            inner[i] -= 2 * t
+        for fid in p.get("open_face_ids") or []:
+            if fid not in sh["faces"]:
+                raise ApiError("INVALID_INPUT", f"face {fid} does not belong to shape", "Use list_faces.", -31)
+            n = self.s.faces[fid][1]["normal"]
+            inner[n.index(1.0)] += t
+        sh["volume"] = dims[0] * dims[1] * dims[2] - inner[0] * inner[1] * inner[2]
+        return {**self.describe(p["shape_id"]), "shapes": sorted(self.s.shapes)}
+
+    def undo(self, p):
+        return self._undo_redo(p, True)
+
+    def redo(self, p):
+        return self._undo_redo(p, False)
+
+    def _undo_redo(self, p, undo):
+        self.need_part()
+        src, dst = (self.undo_stack, self.redo_stack) if undo else (self.redo_stack, self.undo_stack)
+        done = 0
+        for _ in range(p.get("steps", 1)):
+            if not src:
+                break
+            dst.append(copy.deepcopy(self.s))
+            self.s = src.pop()
+            done += 1
+        if not done:
+            raise ApiError("NOTHING_TO_DO", "Nothing to undo" if undo else "Nothing to redo", "")
+        return {"steps_done": done, "shapes": sorted(self.s.shapes)}
+
     def boolean(self, p):
         base = self.shape(p["base_id"])
         op = p["operation"]
@@ -301,11 +423,21 @@ class Fake:
     def list_faces(self, p):
         sh = self.shape(p["shape_id"])
         return {"shape_id": p["shape_id"], "count": len(sh["faces"]),
-                "faces": [{"face_id": f, "bounding_box": self.s.faces[f][1]} for f in sh["faces"]]}
+                "faces": [self._face_json(f) for f in sh["faces"]]}
+
+    def _face_json(self, f):
+        fb = self.s.faces[f][1]
+        out = {"face_id": f, "bounding_box": {k: fb[k] for k in ("min", "max")}}
+        out["bounding_box"]["size"] = [fb["max"][i] - fb["min"][i] for i in range(3)]
+        if "normal" in fb:
+            out["surface"] = "plane"
+            out["plane_normal"] = fb["normal"]
+        return out
 
     def list_edges(self, p):
         sh = self.shape(p["shape_id"])
-        return {"shape_id": p["shape_id"], "count": len(sh["edges"]), "edge_ids": list(sh["edges"])}
+        return {"shape_id": p["shape_id"], "count": len(sh["edges"]), "edge_ids": list(sh["edges"]),
+                "edges": [{"edge_id": e} for e in sh["edges"]]}
 
     def get_mass_props(self, p):
         sh = self.shape(p["shape_id"])
@@ -420,7 +552,12 @@ class FakeServer:
             if method == "_sleep" and params.get("ms", 0) > timeout:
                 time.sleep(timeout / 1000)
                 raise ApiError("TIMEOUT", f"Request exceeded {timeout} ms", "ZW3D may be busy.")
-            return json.dumps({"id": rid, "ok": True, "result": fn(params)}).encode()
+            snap = copy.deepcopy(self.fake.s) if method in self.fake.mutating else None
+            result = fn(params)
+            if snap is not None:
+                self.fake.undo_stack.append(snap)
+                self.fake.redo_stack.clear()
+            return json.dumps({"id": rid, "ok": True, "result": result}).encode()
         except ApiError as e:
             err = {"code": e.code, "api_code": e.api_code, "message": e.message, "hint": e.hint}
         except (KeyError, TypeError, ValueError) as e:

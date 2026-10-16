@@ -181,6 +181,56 @@ def revolve_polygon(
     })
 
 
+@mcp.tool()
+@_with_combine_help
+def extrude_profile(
+    segments: list[dict],
+    distance: float,
+    start: float = 0.0,
+    direction: list[float] | None = None,
+    draft_angle: float = 0.0,
+    combine: Combine = "none",
+) -> dict:
+    """Extrude a closed profile made of lines, arcs and circles (use this instead of extrude_polygon for round shapes).
+
+    segments (mm), in order around the outline; the last end must equal the first start:
+      {"type":"line","start":[x,y,z],"end":[x,y,z]}
+      {"type":"arc","start":[..],"through":[..],"end":[..]}   (through = any point on the arc between start and end)
+      {"type":"circle","center":[..],"radius":r,"normal":[0,0,1]}   (a circle is the ONLY segment of its profile)
+    Other parameters as in extrude_polygon. Hole example: create the solid, then extrude a circle with
+    combine='remove' and a distance that goes through it. """
+    segs = v.segments(segments)
+    if distance <= start:
+        raise v.bad("distance must be greater than start")
+    params = {"segments": segs, "distance": float(distance), "start": float(start),
+              "draft_angle": float(draft_angle), "combine": combine,
+              "direction": v.vector(direction, "direction") if direction is not None else None}
+    return _call("extrude_profile", params)
+
+
+@mcp.tool()
+@_with_combine_help
+def revolve_profile(
+    segments: list[dict],
+    axis_point: list[float],
+    axis_direction: list[float],
+    angle: float = 360.0,
+    start_angle: float = 0.0,
+    combine: Combine = "none",
+) -> dict:
+    """Revolve a closed profile of lines/arcs (same segment format as extrude_profile) around an axis.
+    Typical use: a half cross-section of a shaft, pulley or bowl. Angles in degrees. """
+    segs = v.segments(segments)
+    if any(sg["type"] == "circle" for sg in segs):
+        pass  # a circle revolved about an outside axis gives a torus; allowed
+    if not (0 < angle - start_angle <= 360):
+        raise v.bad("angle - start_angle must be in (0, 360]")
+    return _call("revolve_profile", {
+        "segments": segs, "axis_point": v.point(axis_point, "axis_point"),
+        "axis_direction": v.vector(axis_direction, "axis_direction"),
+        "angle": float(angle), "start_angle": float(start_angle), "combine": combine})
+
+
 # ---------------------------------------------------------------- modify
 @mcp.tool()
 def boolean(operation: Literal["add", "subtract", "intersect"], base_id: int, tool_ids: list[int],
@@ -205,6 +255,45 @@ def fillet_edges(shape_id: int, radius: float, edge_ids: list[int] | None = None
     return _call("fillet_edges", params)
 
 
+@mcp.tool()
+def chamfer_edges(shape_id: int, distance: float, edge_ids: list[int] | None = None,
+                  distance2: float | None = None) -> dict:
+    """Chamfer edges of a solid. distance (mm) is the symmetric setback; give distance2 for an asymmetric chamfer.
+    Without edge_ids ALL edges are chamfered. Use list_edges (it returns each edge's bounding box) to pick edges."""
+    params = {"shape_id": v.id_list([shape_id], "shape_id")[0], "distance": v.positive(distance, "distance")}
+    if edge_ids is not None:
+        params["edge_ids"] = v.id_list(edge_ids, "edge_ids")
+    if distance2 is not None:
+        params["distance2"] = v.positive(distance2, "distance2")
+    return _call("chamfer_edges", params)
+
+
+@mcp.tool()
+def shell_shape(shape_id: int, thickness: float, open_face_ids: list[int] | None = None) -> dict:
+    """Hollow out a solid with a uniform wall `thickness` (mm). open_face_ids are faces that are removed (left open),
+    e.g. the top face of a box to make an open container; get them from list_faces (planar faces report plane_normal)."""
+    params = {"shape_id": v.id_list([shape_id], "shape_id")[0], "thickness": v.positive(thickness, "thickness")}
+    if open_face_ids:
+        params["open_face_ids"] = v.id_list(open_face_ids, "open_face_ids")
+    return _call("shell_shape", params)
+
+
+@mcp.tool()
+def undo(steps: int = 1) -> dict:
+    """Undo the last `steps` operations (1..50). Returns the shapes that remain."""
+    if not (1 <= steps <= 50):
+        raise v.bad("steps must be between 1 and 50")
+    return _call("undo", {"steps": steps})
+
+
+@mcp.tool()
+def redo(steps: int = 1) -> dict:
+    """Redo `steps` previously undone operations (1..50)."""
+    if not (1 <= steps <= 50):
+        raise v.bad("steps must be between 1 and 50")
+    return _call("redo", {"steps": steps})
+
+
 # ---------------------------------------------------------------- queries
 @mcp.tool()
 def list_shapes() -> dict:
@@ -214,13 +303,15 @@ def list_shapes() -> dict:
 
 @mcp.tool()
 def list_faces(shape_id: int) -> dict:
-    """List the face ids of a shape with each face's bounding box."""
+    """List the face ids of a shape with bounding box and surface type; planar faces include plane_normal
+    (axis direction, sign not guaranteed to point outward), cylinders include radius and axis."""
     return _call("list_faces", {"shape_id": v.id_list([shape_id], "shape_id")[0]})
 
 
 @mcp.tool()
 def list_edges(shape_id: int) -> dict:
-    """List the edge ids of a shape (use with fillet_edges)."""
+    """List the edges of a shape: edge_ids plus `edges` with each edge's bounding box (use with fillet_edges /
+    chamfer_edges; a straight edge's box spans its two end points)."""
     return _call("list_edges", {"shape_id": v.id_list([shape_id], "shape_id")[0]})
 
 

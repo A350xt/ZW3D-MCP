@@ -97,6 +97,47 @@ def main() -> int:
             step(b, "fillet_edges r=1 (first edge)", "fillet_edges",
                  {"shape_id": plate["shape_id"], "radius": 1, "edge_ids": edges["edge_ids"][:1]})
 
+    # ---- round profiles, chamfer, shell, undo (batch 2)
+    cp = step(b, "extrude_profile circle r10 h30", "extrude_profile", {
+        "segments": [{"type": "circle", "center": [400, 0, 0], "radius": 10, "normal": [0, 0, 1]}],
+        "distance": 30, "start": 0, "direction": [0, 0, 1], "draft_angle": 0, "combine": "none"})
+    if cp:
+        approx("circle extrude volume", cp["volume"], math.pi * 100 * 30)
+    slot = step(b, "extrude_profile slot (2 lines + 2 arcs)", "extrude_profile", {
+        "segments": [
+            {"type": "line", "start": [500, 0, 0], "end": [540, 0, 0]},
+            {"type": "arc", "start": [540, 0, 0], "through": [550, 10, 0], "end": [540, 20, 0]},
+            {"type": "line", "start": [540, 20, 0], "end": [500, 20, 0]},
+            {"type": "arc", "start": [500, 20, 0], "through": [490, 10, 0], "end": [500, 0, 0]}],
+        "distance": 5, "start": 0, "direction": [0, 0, 1], "draft_angle": 0, "combine": "none"})
+    if slot:
+        approx("slot volume", slot["volume"], (40 * 20 + math.pi * 100) * 5)
+    cb = step(b, "create_box 50x50x20 (for chamfer)", "create_box",
+              {"center": [700, 0, 10], "size": [50, 50, 20], "combine": "none"})
+    if cb and not a.no_fillet:
+        step(b, "chamfer_edges d=2 (all edges)", "chamfer_edges", {"shape_id": cb["shape_id"], "distance": 2})
+    sb = step(b, "create_box 60x40x30 (for shell)", "create_box",
+              {"center": [900, 0, 15], "size": [60, 40, 30], "combine": "none"})
+    if sb:
+        fl = step(b, "list_faces (surface info)", "list_faces", {"shape_id": sb["shape_id"]})
+        if fl:
+            tops = [f for f in fl["faces"] if f.get("surface") == "plane"
+                    and abs(abs(f["plane_normal"][2]) - 1) < 1e-6 and abs(f["bounding_box"]["min"][2] - 30) < 1e-6]
+            print(f"       top-face candidates: {[t['face_id'] for t in tops]}")
+            if tops:
+                sh = step(b, "shell_shape t=2 (top open)", "shell_shape",
+                          {"shape_id": sb["shape_id"], "thickness": 2, "open_face_ids": [tops[0]["face_id"]]})
+                if sh and sh.get("volume") is not None:
+                    approx("shelled volume", sh["volume"], 60 * 40 * 30 - 56 * 36 * 28)
+        ed = step(b, "list_edges (bbox per edge)", "list_edges", {"shape_id": sb["shape_id"]})
+    before = step(b, "list_shapes before undo", "list_shapes")
+    u = step(b, "undo 1", "undo", {"steps": 1})
+    r = step(b, "redo 1", "redo", {"steps": 1})
+    if before and u and r:
+        same = sorted(r["shapes"]) == sorted(s_["shape_id"] for s_ in before["shapes"])
+        print(f"       shapes after undo+redo match: {same}")
+        failures += 0 if same else 1
+
     shot = step(b, "screenshot", "screenshot", {"width": 800, "height": 600, "zoom_all": True})
     if shot:
         p = pathlib.Path(shot["path"])

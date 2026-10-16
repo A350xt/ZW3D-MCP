@@ -2,6 +2,7 @@
 // All use the cvx* interfaces (deprecated in 2025 but still shipped); see docs/api_notes.md.
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include "handlers.h"
 #include "../errors.h"
 
@@ -58,18 +59,78 @@ json h_create_sphere(const json& p) {
   return creation_result(combine, id);
 }
 
-// Closed polyline -> curve list id. Lines stay in the part (same as the vendor example).
-int make_profile(const json& pts_json) {
-  if (!pts_json.is_array() || pts_json.size() < 3) invalid_input("轮廓至少需要 3 个顶点");
-  std::vector<svxPoint> pts;
-  for (size_t i = 0; i < pts_json.size(); ++i) pts.push_back(to_point(pts_json[i], "points[i]"));
-  std::vector<int> lines(pts.size());
-  for (size_t i = 0; i < pts.size(); ++i) {
-    svxPoint a = pts[i], b = pts[(i + 1) % pts.size()];
-    check_api(cvxPartLine2pt(&a, &b, &lines[i]), "cvxPartLine2pt");
+svxPntOnEntPath free_point(const svxPoint& p) {
+  svxPntOnEntPath e;
+  std::memset(&e, 0, sizeof(e));
+  e.pntType = VX_FREE_POINT;
+  e.pnt = p;
+  return e;
+}
+
+// One profile segment -> curve id. Arcs/circles are defined by 3 free points, so they work in any plane.
+int add_segment(const json& s) {
+  std::string type = s.at("type").get<std::string>();
+  int id = 0;
+  if (type == "line") {
+    svxPoint a = to_point(s.at("start"), "start"), b = to_point(s.at("end"), "end");
+    check_api(cvxPartLine2pt(&a, &b, &id), "cvxPartLine2pt");
+  } else if (type == "arc") {
+    svxArcData arc;
+    check_api(cvxPartArcInit(&arc), "cvxPartArcInit");
+    arc.arcType = VX_ARC_THROUGH;  // two end points + a third point the arc passes through
+    arc.startPnt = free_point(to_point(s.at("start"), "start"));
+    arc.endPnt = free_point(to_point(s.at("end"), "end"));
+    arc.centerPnt = free_point(to_point(s.at("through"), "through"));
+    check_api(cvxPartArc(&arc, &id), "cvxPartArc");
+  } else if (type == "circle") {
+    svxPoint c = to_point(s.at("center"), "center");
+    double r = s.at("radius").get<double>();
+    if (!(r > 0)) invalid_input("圆半径必须为正");
+    svxVector n = s.contains("normal") ? to_vector(s["normal"], "normal") : svxVector{0, 0, 1};
+    double nl = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+    if (nl < 1e-12) invalid_input("normal 不能为零向量");
+    n = {n.x / nl, n.y / nl, n.z / nl};
+    // u: any unit vector perpendicular to n; v = n x u
+    svxVector t = std::fabs(n.z) < 0.9 ? svxVector{0, 0, 1} : svxVector{1, 0, 0};
+    svxVector u{n.y * t.z - n.z * t.y, n.z * t.x - n.x * t.z, n.x * t.y - n.y * t.x};
+    double ul = std::sqrt(u.x * u.x + u.y * u.y + u.z * u.z);
+    u = {u.x / ul, u.y / ul, u.z / ul};
+    svxVector v{n.y * u.z - n.z * u.y, n.z * u.x - n.x * u.z, n.x * u.y - n.y * u.x};
+    svxCircleData circ;
+    check_api(cvxPartCircleInit(&circ), "cvxPartCircleInit");
+    circ.type = VX_CIRCLE_THROUGH;  // 3 boundary points define the circle and its plane
+    for (int k = 0; k < 3; ++k) {
+      double a = k * 2.0943951023931953;  // 120 deg
+      double ca = std::cos(a), sa = std::sin(a);
+      circ.bndPnts[k] = free_point({c.x + r * (ca * u.x + sa * v.x), c.y + r * (ca * u.y + sa * v.y), c.z + r * (ca * u.z + sa * v.z)});
+    }
+    check_api(cvxPartCircle(&circ, &id), "cvxPartCircle");
+  } else {
+    invalid_input("未知轮廓段类型: " + type, "可选: line, arc, circle");
+  }
+  return id;
+}
+
+// Profile (closed polygon `points`, or `segments` of lines/arcs/circles) -> curve list id.
+// The curves stay in the part (same as the vendor example).
+int make_profile(const json& p) {
+  std::vector<int> curves;
+  if (p.contains("segments") && p["segments"].is_array()) {
+    if (p["segments"].empty()) invalid_input("segments 不能为空");
+    for (const auto& s : p["segments"]) curves.push_back(add_segment(s));
+  } else {
+    const json& pts_json = p.at("points");
+    if (!pts_json.is_array() || pts_json.size() < 3) invalid_input("轮廓至少需要 3 个顶点");
+    std::vector<svxPoint> pts;
+    for (size_t i = 0; i < pts_json.size(); ++i) pts.push_back(to_point(pts_json[i], "points[i]"));
+    curves.resize(pts.size());
+    for (size_t i = 0; i < pts.size(); ++i) {
+      svxPoint a = pts[i], b = pts[(i + 1) % pts.size()];
+      check_api(cvxPartLine2pt(&a, &b, &curves[i]), "cvxPartLine2pt");
+    }
   }
   int list = 0;
-  check_api(cvxPartCrvList((int)lines.size(), lines.data(), &list), "cvxPartCrvList");
+  check_api(cvxPartCrvList((int)curves.size(), curves.data(), &list), "cvxPartCrvList");
   return list;
 }
 
@@ -79,7 +140,7 @@ json h_extrude_polygon(const json& p) {
   double start = p.value("start", 0.0);
   if (!(dist > start)) invalid_input("distance 必须大于 start");
   DispGuard guard;
-  int profile = make_profile(p.at("points"));
+  int profile = make_profile(p);
   svxExtrudeData ext;
   check_api(cvxPartExtrudeInit(&ext), "cvxPartExtrudeInit");
   ext.Combine = combine;
@@ -104,7 +165,7 @@ json h_revolve_polygon(const json& p) {
   double angle = p.at("angle").get<double>(), start = p.value("start_angle", 0.0);
   if (!(angle > start) || angle - start > 360.0) invalid_input("angle - start_angle 必须在 (0, 360] 内");
   DispGuard guard;
-  int profile = make_profile(p.at("points"));
+  int profile = make_profile(p);
   svxRevolveData rev;
   check_api(cvxPartRevolveInit(&rev), "cvxPartRevolveInit");
   rev.Combine = combine;
@@ -173,6 +234,66 @@ json h_fillet_edges(const json& p) {
   return out;
 }
 
+std::vector<int> edges_of(const json& p, int shape) {
+  if (p.contains("edge_ids") && !p["edge_ids"].is_null()) return p["edge_ids"].get<std::vector<int>>();
+  int n = 0;
+  int* ids = nullptr;
+  check_api(cvxPartInqShapeEdges(shape, &n, &ids), "cvxPartInqShapeEdges");
+  std::vector<int> edges(ids, ids + n);
+  if (ids) cvxMemFree(reinterpret_cast<void**>(&ids));
+  return edges;
+}
+
+void merge_shape_info(json& out, int shape) {
+  json d = describe_shape_or_null(shape);
+  if (d.is_object()) for (auto it = d.begin(); it != d.end(); ++it) out[it.key()] = it.value();
+}
+
+json h_chamfer_edges(const json& p) {
+  int shape = p.at("shape_id").get<int>();
+  double d1 = p.at("distance").get<double>();
+  double d2 = p.contains("distance2") && !p["distance2"].is_null() ? p["distance2"].get<double>() : 0.0;
+  if (!(d1 > 0)) invalid_input("倒角距离必须为正");
+  if (d2 < 0) invalid_input("distance2 不能为负");
+  require_shape(shape);
+  std::vector<int> edges = edges_of(p, shape);
+  if (edges.empty()) invalid_input("没有可倒角的边");
+  DispGuard guard;
+  svxChamFlltData ch;
+  check_api(cvxPartChamferAllInit(&ch), "cvxPartChamferAllInit");
+  ch.type = d2 > 0 ? VX_CHAMFLLT_ASYMMETRIC : VX_CHAMFLLT_SYMMETRIC;
+  ch.nEdges = (int)edges.size();
+  ch.idEdge = edges.data();
+  ch.setback1 = d1;
+  ch.setback2 = d2;
+  int id = 0;
+  check_api(cvxPartChamferAll(&ch, &id), "cvxPartChamferAll");
+  json out = {{"edge_count", edges.size()}, {"shapes", inq_shape_ids()}};
+  merge_shape_info(out, shape);
+  return out;
+}
+
+json h_shell_shape(const json& p) {
+  int shape = p.at("shape_id").get<int>();
+  double t = p.at("thickness").get<double>();
+  if (!(t > 0)) invalid_input("壁厚必须为正");
+  std::vector<int> open = p.contains("open_face_ids") && !p["open_face_ids"].is_null()
+                              ? p["open_face_ids"].get<std::vector<int>>() : std::vector<int>();
+  require_shape(shape);
+  DispGuard guard;
+  svxShellData sh;
+  check_api(cvxPartShellInit(&sh), "cvxPartShellInit");
+  sh.idShape = shape;
+  sh.dThick = t;
+  sh.cntOpenFace = (int)open.size();
+  sh.pIdOpenFace = open.empty() ? nullptr : open.data();
+  int id = 0;
+  check_api(cvxPartShell(&sh, &id), "cvxPartShell");
+  json out = {{"shapes", inq_shape_ids()}};
+  merge_shape_info(out, shape);
+  return out;
+}
+
 }  // namespace
 
 void register_part_handlers(std::map<std::string, Handler>& m) {
@@ -183,4 +304,8 @@ void register_part_handlers(std::map<std::string, Handler>& m) {
   m["revolve_polygon"] = h_revolve_polygon;
   m["boolean"] = h_boolean;
   m["fillet_edges"] = h_fillet_edges;
+  m["chamfer_edges"] = h_chamfer_edges;
+  m["shell_shape"] = h_shell_shape;
+  m["extrude_profile"] = h_extrude_polygon;
+  m["revolve_profile"] = h_revolve_polygon;
 }

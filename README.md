@@ -43,8 +43,9 @@ Claude Desktop / Cursor: command `python`, args `["-m", "zw3d_mcp"]`. Set `ZW3D_
 ## 3. Tools (units: mm, degrees)
 
 `ping`, `new_part`, `save_part`, `export_step`, `create_box`, `create_cylinder`, `create_sphere`, `extrude_polygon`,
-`revolve_polygon`, `boolean`, `fillet_edges`, `list_shapes`, `list_faces`, `list_edges`, `get_mass_props`,
-`get_bounding_box`, `screenshot`, `run_command` (opt-in). Every creation tool returns the new `shape_id`, its bounding box
+`revolve_polygon`, `extrude_profile` / `revolve_profile` (lines, 3-point arcs, circles), `boolean`, `fillet_edges`,
+`chamfer_edges`, `shell_shape`, `undo`, `redo`, `list_shapes`, `list_faces` (surface type + plane normal), `list_edges`
+(per-edge bounding box), `get_mass_props`, `get_bounding_box`, `screenshot`, `run_command` (opt-in). Every creation tool returns the new `shape_id`, its bounding box
 and volume. Errors come back as `[CODE] message Hint: …` so the agent can self-correct.
 
 ## 4. Test
