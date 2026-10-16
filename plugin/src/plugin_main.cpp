@@ -3,6 +3,7 @@
 #include <string>
 #include "VxApi.h"
 #include "dispatcher.h"
+#include "handlers/handlers.h"
 #include "plugin_info.h"
 #include "server.h"
 
@@ -50,6 +51,7 @@ extern "C" __declspec(dllexport) int zw3dmcpInit(int /*format*/, void* /*data*/)
     say("[ZW3D-MCP] failed to create the dispatcher window");
     return 0;
   }
+  cleanup_screenshots(600);  // stale files from a previous crashed session
   if (autostart()) start_server();
   else say("[ZW3D-MCP] loaded (autostart disabled); run McpStart to listen");
   return 0;
@@ -59,6 +61,7 @@ extern "C" __declspec(dllexport) int zw3dmcpExit(void) {
   dispatcher().Shutdown();  // release any waiting socket thread first, so Stop() cannot block on us
   server().Stop();
   dispatcher().Destroy();
+  cleanup_screenshots(-1);  // leave no screenshot files behind in %TEMP%
   cvxCmdFuncUnload("McpStart");
   cvxCmdFuncUnload("McpStop");
   return 0;

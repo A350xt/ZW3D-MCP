@@ -6,6 +6,7 @@ Units: millimetres and degrees. Coordinates are [x, y, z] in the part's global f
 from __future__ import annotations
 
 import os
+import tempfile
 from typing import Literal
 
 from . import __version__, validation as v
@@ -340,7 +341,13 @@ def screenshot(width: int = 800, height: int = 600, zoom_all: bool = True) -> Im
     if not (64 <= width <= 4096 and 64 <= height <= 4096):
         raise v.bad("width and height must be between 64 and 4096")
     r = _call("screenshot", {"width": width, "height": height, "zoom_all": zoom_all})
-    path = r["path"]
+    path = os.path.abspath(r["path"])
+    # The reply comes from a local socket with no authentication: only ever read/delete our own screenshot files.
+    shot_dir = os.path.join(tempfile.gettempdir(), "zw3d_mcp")
+    name = os.path.basename(path)
+    if os.path.normcase(os.path.dirname(path)) != os.path.normcase(os.path.abspath(shot_dir))             or not (name.startswith("shot_") and name.endswith(".png")):
+        raise ZW3DError("INTERNAL", f"Refusing to read unexpected screenshot path {path!r}",
+                        "The plugin should write shot_*.png into the zw3d_mcp folder of the system temp directory.")
     try:
         with open(path, "rb") as f:
             data = f.read()
@@ -349,7 +356,11 @@ def screenshot(width: int = 800, height: int = 600, zoom_all: bool = True) -> Im
                         "The MCP server must run on the same machine as ZW3D.")
     finally:
         try:
-            os.remove(path)
+            os.remove(path)  # always recycle the temp file, success or not
+        except OSError:
+            pass
+        try:
+            os.rmdir(shot_dir)  # only succeeds when empty
         except OSError:
             pass
     return Image(data=data, format="png")

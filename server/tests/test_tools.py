@@ -181,12 +181,31 @@ def test_mass_props_and_bbox(part):
     assert len(server.list_faces(b["shape_id"])["faces"]) == 6
 
 
-def test_screenshot_returns_png_and_cleans_up(part):
+def test_screenshot_returns_png_and_cleans_up(part, monkeypatch):
+    seen = []
+    real_call = server._call
+
+    def spy(*a, **k):
+        r = real_call(*a, **k)
+        if "path" in r:
+            seen.append(r["path"])
+        return r
+
+    monkeypatch.setattr(server, "_call", spy)
     img = server.screenshot(width=64, height=64)
     content = img.to_image_content()
     assert (getattr(content, "mime_type", None) or content.mimeType) == "image/png" and content.data
-    d = pathlib.Path(os.environ.get("TEMP", "/tmp")) / "zw3d_mcp"
-    assert not list(d.glob("shot_*.png")) or True  # best-effort; fake and tool share the dir
+    assert seen and not os.path.exists(seen[0]), "screenshot temp file was not recycled"
+
+
+def test_screenshot_refuses_foreign_paths(part, monkeypatch):
+    import tempfile
+    victim = pathlib.Path(tempfile.mkdtemp()) / "important.txt"
+    victim.write_text("keep me")
+    monkeypatch.setattr(server, "_call", lambda *a, **k: {"path": str(victim)})
+    with pytest.raises(ZW3DError):
+        server.screenshot()
+    assert victim.exists()
 
 
 def test_screenshot_size_validation(part):

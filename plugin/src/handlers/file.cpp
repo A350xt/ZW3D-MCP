@@ -63,15 +63,51 @@ json h_export_step(const json& p) {
   return {{"path", p["path"]}};
 }
 
+std::wstring screenshot_dir() {
+  wchar_t tmp[MAX_PATH + 1];
+  DWORD n = GetTempPathW(MAX_PATH, tmp);
+  if (n == 0 || n > MAX_PATH) throw ApiError("INTERNAL", "无法获取临时目录");
+  return std::wstring(tmp) + L"zw3d_mcp";
+}
+
+}  // namespace
+
+// Deletes shot_*.png in %TEMP%\zw3d_mcp. older_than_s < 0 removes all of them (and the folder if it ends up empty).
+// Only files matching our own name pattern are touched. Best effort: never throws.
+void cleanup_screenshots(int older_than_s) {
+  try {
+    std::wstring dir = screenshot_dir();
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((dir + L"\shot_*.png").c_str(), &fd);
+    if (h != INVALID_HANDLE_VALUE) {
+      FILETIME now_ft;
+      GetSystemTimeAsFileTime(&now_ft);
+      ULARGE_INTEGER now;
+      now.LowPart = now_ft.dwLowDateTime;
+      now.HighPart = now_ft.dwHighDateTime;
+      do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        ULARGE_INTEGER w;
+        w.LowPart = fd.ftLastWriteTime.dwLowDateTime;
+        w.HighPart = fd.ftLastWriteTime.dwHighDateTime;
+        bool old = older_than_s < 0 || (now.QuadPart > w.QuadPart && (now.QuadPart - w.QuadPart) / 10000000ULL >= (unsigned)older_than_s);
+        if (old) DeleteFileW((dir + L"\\" + fd.cFileName).c_str());
+      } while (FindNextFileW(h, &fd));
+      FindClose(h);
+    }
+    if (older_than_s < 0) RemoveDirectoryW(dir.c_str());  // fails harmlessly if something else lives there
+  } catch (...) {}
+}
+
+namespace {
+
 json h_screenshot(const json& p) {
   int w = p.value("width", 800), h = p.value("height", 600);
   if (w < 64 || h < 64 || w > 4096 || h > 4096) invalid_input("width/height 必须在 64..4096 之间");
 
-  wchar_t tmp[MAX_PATH + 1];
-  DWORD n = GetTempPathW(MAX_PATH, tmp);
-  if (n == 0 || n > MAX_PATH) throw ApiError("INTERNAL", "无法获取临时目录");
-  std::wstring dir = std::wstring(tmp) + L"zw3d_mcp";
+  std::wstring dir = screenshot_dir();
   CreateDirectoryW(dir.c_str(), nullptr);  // ok if it already exists
+  cleanup_screenshots(600);                // drop leftovers (client crashed / never fetched) older than 10 min
   auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
   std::string path_utf8 = wide_to_utf8(dir) + "\\shot_" + std::to_string(ms) + ".png";
   char path[512];
