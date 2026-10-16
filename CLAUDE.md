@@ -376,7 +376,6 @@ cvxFileExport(VX_EXPORT_TYPE_IMG, path_ansi, &data);
 
 - **Python 层**：`pytest` + fake_zw3d.py，在任意系统上跑；覆盖每个工具的参数校验、正常路径、错误路径、超时。
 - **协议一致性**：用一个 JSON 用例文件（请求 + 期望响应结构），同时跑 fake 和真插件。
-- **插件层**：无法在 CI 上跑。提供 `tools/smoke_test.py`：连上真实插件，依次调用所有 method，打印结果和耗时；由用户在装有中望3D的机器上手动执行，把输出贴回来。
 - 每次修改 C++ 后，提醒用户：关闭中望3D → 重新编译 → 重新加载插件（DLL 被占用时无法覆盖）。
 
 ---
