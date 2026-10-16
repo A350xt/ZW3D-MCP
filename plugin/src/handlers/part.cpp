@@ -317,8 +317,38 @@ json h_boolean(const json& p) {
   if (std::find(tools.begin(), tools.end(), base) != tools.end()) invalid_input("base_id 不能同时出现在 tool_ids 中");
   require_shape(base);
   for (int t : tools) require_shape(t);
+
+  // cvxPartBool "succeeds" even when the tool does not touch the base: subtract then just consumes the tool and leaves the base
+  // unchanged (a sphere beside a box vanished with no message). Refuse that up front when the bounding boxes are disjoint ...
+  svxBndBox bb{};
+  check_api(cvxPartInqShapeBox(base, nullptr, &bb), "cvxPartInqShapeBox");
+  if (type != VX_BOOL_ADD) {
+    for (int t : tools) {
+      svxBndBox tb{};
+      check_api(cvxPartInqShapeBox(t, nullptr, &tb), "cvxPartInqShapeBox");
+      auto overlap = [](const svxLimit& a, const svxLimit& b) { return std::min(a.max, b.max) - std::max(a.min, b.min) > 1e-9; };
+      if (!(overlap(bb.X, tb.X) && overlap(bb.Y, tb.Y) && overlap(bb.Z, tb.Z)))
+        throw ApiError("BOOLEAN_NO_OVERLAP", "工具体 " + std::to_string(t) + " 与基体 " + std::to_string(base) + " 的包围盒不相交，" + op + " 不会有任何效果",
+                       "先用 get_bounding_box 比较两者的位置和尺寸，把工具体移到与基体重叠的位置。两个实体都没有被修改。");
+    }
+  }
+  double vol_before = 0;
+  {
+    svxMassProp mp{};
+    if (cvxPartInqShapeMass(base, 0.0, &mp) == 0) vol_before = mp.Volume;
+  }
+
   DispGuard guard;
   check_api(cvxPartBool(type, base, (int)tools.size(), tools.data(), p.value("keep_tools", false) ? 1 : 0), "cvxPartBool");
+  // ... and when the boxes overlap but the real shapes do not (e.g. a sphere touching only the corner region of a box's bounding box).
+  if (type == VX_BOOL_REMOVE && vol_before > 0) {
+    svxMassProp mp{};
+    std::vector<int> now_ids = inq_shape_ids();
+    bool still = std::find(now_ids.begin(), now_ids.end(), base) != now_ids.end();
+    if (still && cvxPartInqShapeMass(base, 0.0, &mp) == 0 && std::fabs(mp.Volume - vol_before) <= 1e-9 * std::max(1.0, vol_before))
+      throw ApiError("BOOLEAN_NO_EFFECT", "subtract 没有改变基体 " + std::to_string(base) + " 的体积：工具体与基体的实际形状并不相交（只是包围盒重叠）",
+                     "检查两个实体的真实位置和形状。已回滚，两个实体都没有被修改。");
+  }
   // The base id may change after a boolean, so report what exists now.
   json out = {{"shape", describe_shape_or_null(base)}, {"shapes", inq_shape_ids()}};
   if (out["shape"].is_object()) {

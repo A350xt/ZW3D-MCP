@@ -190,3 +190,7 @@ The MCP/validation/HTTP layers were exercised offline with a throwaway stub host
    (`combine = none`) or the geometry fingerprint is unchanged (`combine = add`, feature mirror).
 4. **A negative value in a distance field silently flips the feature** (extrusion reversed, no error). `set_feature_value` refuses negative distances with
    `NEGATIVE_DISTANCE` unless `allow_negative=true`.
+
+5. **`boolean` subtract of a disjoint tool "succeeds"** (a sphere beside a box: reported OK, box volume unchanged, the sphere consumed). `cvxPartBool` does not report it.
+   Now `subtract` / `intersect` first compare the bounding boxes of base and every tool (`BOOLEAN_NO_OVERLAP`, nothing touched), and after a subtract
+   the base volume is compared with the volume before (`BOOLEAN_NO_EFFECT`, rolled back) to catch overlapping boxes with non-overlapping shapes. `add` is not checked.

@@ -341,7 +341,8 @@ void build() {
   // ============================================================ modify
   add("boolean",
       "Combine solids: base (+|-|intersect) tools. Returns the surviving shape ids and the base solid's bbox/volume. keep_tools=true keeps the tool solids "
-      "instead of consuming them.",
+      "instead of consuming them. subtract / intersect fail (BOOLEAN_NO_OVERLAP / BOOLEAN_NO_EFFECT, nothing modified) when the tool does not actually overlap "
+      "the base.",
       schema({{"operation", t_enum({"add", "subtract", "intersect"})}, {"base_id", t_int()}, {"tool_ids", t_ids()}, {"keep_tools", t_bool()}},
              {"operation", "base_id", "tool_ids"}),
       [](const json& a) {
