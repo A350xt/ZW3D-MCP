@@ -44,90 +44,86 @@ Without `ZW3D_MCP_TOKEN`, any local process can still call it (including `run_co
 
 ## Tools
 
-Units are **millimetres and degrees**; points are `[x, y, z]`. Modeling tools return the affected shapes with bounding box and volume.
-Errors come back as `[CODE] message  Hint: …` so the agent can correct itself. Each modeling call is one undo step and is rolled back completely on failure.
-
-Status: ✅ exercised on a real ZW3D 2025 SP2 · ⚠️ implemented from the SDK headers, not fully verified live (see [docs/api_notes.md](docs/api_notes.md)).
+Units are millimetres and degrees; points are `[x, y, z]`.
 
 **Session and files**
 
-| Tool | What it does | Main parameters | Status |
-|---|---|---|---|
-| `ping` | Connection check; plugin version, active file and part | – | ✅ |
-| `new_part` | New single-root part (`.Z3PRT`), made active | `name` | ✅ |
-| `save_part` | Save, or Save As when a path is given | `path?` | ✅ |
-| `export_step` | Export the active file as STEP | `path` | ✅ |
-| `screenshot` | PNG of the current view returned as an image (temp file deleted) | `width, height, zoom_all` | ✅ |
-| `run_command` | Raw ZW3D command string (needs `ZW3D_MCP_ENABLE_RUN_COMMAND=1`) | `command` | ✅ |
-| `undo` / `redo` | Undo/redo whole tool calls; reports removed/added shapes | `steps` | ⚠️ |
+| Tool | What it does |
+|---|---|
+| `ping` | Check the connection; plugin version, active file and part |
+| `new_part` | Create a new part file (`.Z3PRT`) and make it active |
+| `save_part` | Save, or Save As when a path is given |
+| `export_step` | Export the active file as STEP |
+| `screenshot` | Capture the current view as an image |
+| `run_command` | Send a raw ZW3D command (disabled unless enabled by environment variable) |
+| `undo` / `redo` | Undo / redo whole tool calls |
 
 **Primitives**
 
-| Tool | What it does | Main parameters | Status |
-|---|---|---|---|
-| `create_box` | Axis-aligned box | `center+size` or `corner1+corner2`, `combine` | ✅ |
-| `create_cylinder` | Cylinder along +Z from the bottom-face centre | `base_center, radius, height, combine` | ✅ |
-| `create_sphere` | Sphere | `center, radius, combine` | ✅ |
+| Tool | What it does |
+|---|---|
+| `create_box` | Create a box |
+| `create_cylinder` | Create a cylinder |
+| `create_sphere` | Create a sphere |
 
-**Profile features** (`combine`: `none` new body, `add`, `remove`, `intersect`)
+**Profile features**
 
-| Tool | What it does | Main parameters | Status |
-|---|---|---|---|
-| `sketch_extrude` | Real sketch on a plane (auto dimensions), then extrude; supports inner-loop holes | `plane, segments, distance, start, symmetric, reverse, draft_angle, dimensions, holes, combine` | ⚠️ |
-| `sketch_revolve` | Real sketch revolved around a 2D axis | `plane, segments, axis_point, axis_direction, angle, combine` | ⚠️ |
-| `extrude_polygon` | Extrude a closed planar polygon (wireframe, no sketch) | `points, distance, start, direction, draft_angle, combine` | ✅ |
-| `revolve_polygon` | Revolve a closed planar polygon | `points, axis_point, axis_direction, angle, combine` | ✅ |
-| `extrude_profile` | Extrude lines / 3-point arcs / circle | `segments, distance, …` | ✅ |
-| `revolve_profile` | Revolve lines / arcs | `segments, axis_point, axis_direction, angle, …` | ✅ |
-| `sweep` | Sweep a closed profile along a line/arc path | `profile, path, combine` | ⚠️ |
-| `loft` | Loft through ≥ 2 closed sections | `sections, combine` | ⚠️ |
+| Tool | What it does |
+|---|---|
+| `sketch_extrude` | Draw a real sketch on a plane (optionally with inner holes) and extrude it |
+| `sketch_revolve` | Draw a real sketch on a plane and revolve it around an axis |
+| `extrude_polygon` | Extrude a closed planar polygon |
+| `revolve_polygon` | Revolve a closed planar polygon around an axis |
+| `extrude_profile` | Extrude a profile made of lines, arcs and circles |
+| `revolve_profile` | Revolve a profile made of lines and arcs |
+| `sweep` | Sweep a closed profile along a path |
+| `loft` | Loft through two or more closed sections |
 
 **Editing features**
 
-| Tool | What it does | Main parameters | Status |
-|---|---|---|---|
-| `boolean` | Add / subtract / intersect solids (refuses non-overlapping tools) | `operation, base_id, tool_ids, keep_tools` | ✅ |
-| `fillet_edges` | Constant-radius fillet (all edges if none given) | `shape_id, radius, edge_ids?` | ✅ |
-| `chamfer_edges` | Symmetric or asymmetric chamfer | `shape_id, distance, distance2?, edge_ids?` | ✅ |
-| `shell_shape` | Hollow a solid, optional open faces; inward by default | `shape_id, thickness, open_face_ids?, inward` | ⚠️ |
-| `create_hole` | Simple / counterbore / countersink holes on a planar face | `face_id, points, diameter, depth` or `through, hole_type` | ⚠️ |
-| `draft_faces` | Draft faces about neutral faces | `face_ids, neutral_face_ids, angle, pull_direction` | ⚠️ |
-| `pattern_linear` | Linear / grid pattern of a solid or features | `count, spacing, direction, shape_id` or `feature_ids, count2…` | ⚠️ |
-| `pattern_circular` | Circular pattern of a solid or features | `count, axis_point, axis_direction, angle?` | ⚠️ |
-| `mirror` | Mirror a solid or features across a plane | `plane, shape_id` or `feature_ids, combine` | ⚠️ |
+| Tool | What it does |
+|---|---|
+| `boolean` | Add, subtract or intersect solids |
+| `fillet_edges` | Round edges with a constant radius |
+| `chamfer_edges` | Chamfer edges |
+| `shell_shape` | Hollow out a solid, optionally leaving faces open |
+| `create_hole` | Cut simple, counterbore or countersink holes on a planar face |
+| `draft_faces` | Apply a draft angle to faces |
+| `pattern_linear` | Repeat a solid or features in a line or grid |
+| `pattern_circular` | Repeat a solid or features around an axis |
+| `mirror` | Mirror a solid or features across a plane |
 
 **Queries**
 
-| Tool | What it does | Main parameters | Status |
-|---|---|---|---|
-| `list_shapes` | All solids with bbox, volume, area | – | ✅ |
-| `list_faces` | Faces with bbox, surface type, plane normal / cylinder radius+axis | `shape_id` | ✅ |
-| `list_edges` | Edges with exact bbox and curve (line ends / arc centre+radius) | `shape_id` | ✅ |
-| `list_features` | History features with id, name, template | – | ⚠️ |
-| `get_bounding_box` | Bounding box of a solid | `shape_id` | ✅ |
-| `get_mass_props` | Volume, area, `mass_kg`, centre of gravity | `shape_id, density?` | ✅ |
+| Tool | What it does |
+|---|---|
+| `list_shapes` | List all solids with bounding box, volume and area |
+| `list_faces` | List the faces of a solid with their geometry |
+| `list_edges` | List the edges of a solid with their geometry |
+| `list_features` | List the history features of the part |
+| `get_bounding_box` | Get the bounding box of a solid |
+| `get_mass_props` | Get volume, area, mass and centre of gravity |
 
 **Parametric edits**
 
-| Tool | What it does | Main parameters | Status |
-|---|---|---|---|
-| `list_variables` / `add_variable` / `set_variable` | Part variables (distance, angle, number or expression); setting regenerates the part | `name, value` or `expression, kind` | ⚠️ |
-| `list_sketch_variables` / `set_sketch_variable` | Sketch variables with diagnostics; edit one and regenerate | `sketch_id, name, value` | ⚠️ |
-| `get_feature_data` | Fields of one feature: id, label, type, value, `variable_name` | `feature_id` | ⚠️ |
-| `set_feature_value` | Change a numeric parameter of an existing feature and regenerate | `feature_id, field_id, value` | ⚠️ |
+| Tool | What it does |
+|---|---|
+| `list_variables` | List the part variables |
+| `add_variable` | Add a part variable (value or expression) |
+| `set_variable` | Change a part variable and regenerate |
+| `list_sketch_variables` | List the variables of a sketch |
+| `set_sketch_variable` | Change a sketch variable and regenerate |
+| `get_feature_data` | Read the editable fields of a feature |
+| `set_feature_value` | Change a numeric parameter of an existing feature and regenerate |
 
-Note: regeneration renumbers shape/face/edge ids, so use only the ids returned by the last call.
+**Assemblies and drawings**
 
-**Assemblies and drawings** (basic)
-
-| Tool | What it does | Main parameters | Status |
-|---|---|---|---|
-| `new_assembly` | New assembly file (`.Z3ASM`) | `name` | ⚠️ |
-| `insert_component` | Insert a saved part into the active assembly | `file, position, anchor` | ⚠️ |
-| `list_components` | Component ids of the active assembly | – | ⚠️ |
-| `new_drawing` | New drawing with the standard views of a saved part | `name, part_file` | ⚠️ |
-
-Not covered yet: assembly mates, drawing dimensions/annotations/BOM, sheet metal, weldments, CAM, simulation.
+| Tool | What it does |
+|---|---|
+| `new_assembly` | Create a new assembly file |
+| `insert_component` | Insert a saved part into the active assembly |
+| `list_components` | List the components of the active assembly |
+| `new_drawing` | Create a drawing with the standard views of a saved part |
 
 ## Build from source (Windows, VS 2022)
 
@@ -140,19 +136,3 @@ cmake --build build --config Release
 The SDK is found automatically (`C:\Program Files\ZWSOFT\ZW3D <year>`, newest ≥ 2025); otherwise pass `-DZW3D_SDK_DIR="D:\ZW3D 2026"`.
 `-DZW3D_MCP_INSTALL_USER=ON -DZW3D_MCP_YEAR=2025` copies the DLL into the apilibs folder after the build (**close ZW3D first**, a loaded DLL cannot be overwritten).
 `scripts/package.ps1` builds the release zip.
-
-## Testing
-
-The plugin only runs inside ZW3D, so the repository has no offline test suite. Live testing is done by hand or by an agent through the MCP tools;
-open items and live findings are recorded in [docs/api_notes.md](docs/api_notes.md).
-
-## Repository layout
-
-| Path | Content |
-|---|---|
-| `plugin/src/server.cpp` | HTTP server (Winsock) |
-| `plugin/src/mcp/` | MCP protocol, tool table with JSON Schemas, validation |
-| `plugin/src/dispatcher.cpp` | Main-thread dispatcher (all ZW3D calls run on ZW3D's main thread) |
-| `plugin/src/handlers/` | ZW3D API handlers |
-| `docs/` | `INSTALL.md`, `api_notes.md` |
-| `CLAUDE.md` | Design document |
