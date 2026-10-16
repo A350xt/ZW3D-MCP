@@ -16,8 +16,18 @@ DEFAULT_TIMEOUT_MS = 60_000
 MAX_LINE = 16 * 1024 * 1024
 
 
-class ZW3DError(Exception):
-    """Error reported by the plugin (or by the transport)."""
+try:  # mcp >= 2.0
+    from mcp.server.mcpserver.exceptions import ToolError as _ToolError
+except ImportError:  # mcp 1.x
+    from mcp.server.fastmcp.exceptions import ToolError as _ToolError  # type: ignore
+
+
+class ZW3DError(_ToolError):
+    """Error reported by the plugin (or by the transport).
+
+    Subclasses the SDK's ToolError on purpose: mcp 2.x forwards the text of a ToolError to the client but treats
+    every other exception as a crash and withholds its message, which would hide `code` and `hint` from the AI.
+    """
 
     def __init__(self, code: str, message: str, hint: str = "", api_code: int | None = None):
         super().__init__(message)

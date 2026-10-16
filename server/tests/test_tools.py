@@ -326,3 +326,48 @@ def test_undo_redo(part):
     assert e.value.code == "NOTHING_TO_DO"
     with pytest.raises(ZW3DError):
         server.undo(0)
+
+
+# ------------------------------------------------------------------ errors must survive the real MCP transport
+def _mcp_call(port, calls):
+    """Run `python -m zw3d_mcp` over stdio (the way a client does) and return the tools/call results."""
+    import subprocess
+    import sys
+    env = dict(os.environ, ZW3D_MCP_PORT=str(port), PYTHONIOENCODING="utf-8")
+    p = subprocess.Popen([sys.executable, "-m", "zw3d_mcp"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL, env=env)
+
+    def send(o):
+        p.stdin.write((json.dumps(o) + "\n").encode())
+        p.stdin.flush()
+
+    try:
+        send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}})
+        p.stdout.readline()
+        send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        out = []
+        for i, (name, args) in enumerate(calls, start=2):
+            send({"jsonrpc": "2.0", "id": i, "method": "tools/call", "params": {"name": name, "arguments": args}})
+            out.append(json.loads(p.stdout.readline().decode("utf-8")))
+        return out
+    finally:
+        p.kill()
+
+
+def test_errors_reach_the_ai_with_code_and_hint(fake):
+    """Regression: with mcp 2.x a non-ToolError exception arrives as just 'Error executing tool X'."""
+    calls = [
+        ("create_box", {"center": [0, 0, 0], "size": [10, -1, 5]}),                       # client-side validation
+        ("create_box", {"center": [0, 0, 0], "size": [1, 1, 1]}),                         # plugin error: no part yet
+        ("run_command", {"command": "x"}),                                               # DISABLED
+    ]
+    replies = _mcp_call(fake.port, calls)
+    texts = []
+    for r in replies:
+        res = r["result"]
+        assert res["isError"] is True
+        texts.append(res["content"][0]["text"])
+    assert "INVALID_INPUT" in texts[0] and "positive" in texts[0]
+    assert "WRONG_ROOT_ENV" in texts[1] and "new_part" in texts[1]
+    assert "DISABLED" in texts[2] and "ZW3D_MCP_ENABLE_RUN_COMMAND" in texts[2]
