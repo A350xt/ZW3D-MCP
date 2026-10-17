@@ -101,7 +101,8 @@ bool is_modeling_method(const std::string& m) {
                                 "extrude_profile", "revolve_profile", "sketch_extrude", "sketch_revolve", "boolean",
                                 "fillet_edges", "chamfer_edges", "shell_shape", "create_hole", "pattern_shape", "pattern_feature",
                                 "mirror_shape", "mirror_feature", "draft_faces", "sweep", "loft", "helical_sweep", "add_thread", "set_variable",
-                                "add_variable", "set_sketch_variable", "set_feature_value"};
+                                "add_variable", "set_sketch_variable", "set_feature_value", "delete_shapes", "delete_features", "suppress_features",
+                                "move_shapes", "scale_shapes", "create_rib", "thicken_faces", "trim_shape", "split_shape", "extend_face"};
   for (const char* n : names) if (m == n) return true;
   return false;
 }

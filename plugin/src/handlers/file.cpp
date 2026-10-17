@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include "handlers.h"
 #include "../encoding.h"
@@ -102,9 +103,73 @@ void cleanup_screenshots(int older_than_s) {
 
 namespace {
 
+// Standard view / display mode by name; empty string = leave as is.
+void apply_view(const std::string& view, const std::string& mode) {
+  if (!view.empty()) {
+    static const std::pair<const char*, evxViewStd> views[] = {{"front", VX_VIEW_FRONT}, {"back", VX_VIEW_BACK}, {"top", VX_VIEW_TOP}, {"bottom", VX_VIEW_BOTTOM},
+                                                              {"right", VX_VIEW_RIGHT}, {"left", VX_VIEW_LEFT}, {"iso", VX_VIEW_ISO}};
+    bool found = false;
+    for (const auto& v : views)
+      if (view == v.first) {
+        cvxViewStd(v.second, 100.0);
+        found = true;
+      }
+    if (!found) invalid_input("view 取值无效: " + view, "可选: front, back, top, bottom, right, left, iso");
+  }
+  if (!mode.empty()) {
+    evxDispMode m;
+    if (mode == "shaded") m = VX_DISP_SHADE;
+    else if (mode == "wireframe") m = VX_DISP_WIRE;
+    else if (mode == "hidden") m = VX_DISP_HIDD_APPROX;
+    else if (mode == "shaded_edges") m = VX_DISP_EDGE;
+    else invalid_input("display_mode 取值无效: " + mode, "可选: shaded, shaded_edges, wireframe, hidden");
+    cvxDispModeSet(m);
+  }
+}
+
+json h_set_view(const json& p) {
+  apply_view(p.value("view", std::string()), p.value("display_mode", std::string()));
+  if (p.value("zoom_all", true)) cvxDispZoomAll(1);
+  cvxDispRedraw();
+  return {{"view", p.value("view", std::string())}, {"display_mode", p.value("display_mode", std::string())}};
+}
+
+json h_open_file(const json& p) {
+  char path[512];
+  to_ansi_path(p.at("path").get<std::string>(), path, "path");
+  check_api(cvxFileOpen(path), "cvxFileOpen");
+  return {{"file", current_file_utf8()}, {"part", current_root_utf8()}, {"shapes", inq_shape_ids()}};
+}
+
+json h_import_file(const json& p) {
+  std::string path = p.at("path").get<std::string>();
+  std::string ext = path.substr(path.find_last_of('.') == std::string::npos ? path.size() : path.find_last_of('.'));
+  std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+  evxImportType type;
+  if (ext == ".step" || ext == ".stp") type = VX_IMPORT_TYPE_STEP;
+  else if (ext == ".x_t" || ext == ".x_b" || ext == ".xt") type = VX_IMPORT_TYPE_PARASOLID;
+  else if (ext == ".sat" || ext == ".sab") type = VX_IMPORT_TYPE_SAT;
+  else if (ext == ".igs" || ext == ".iges") type = VX_IMPORT_TYPE_IGES;
+  else if (ext == ".stl") type = VX_IMPORT_TYPE_STL;
+  else invalid_input("不支持的导入扩展名: " + ext, "支持 .step/.stp .x_t .sat .igs/.iges .stl；.Z3PRT/.Z3 文件请用 open_file。");
+  std::string target = p.value("target", std::string("new_file"));
+  if (target != "new_file" && target != "current_part") invalid_input("target 必须是 new_file 或 current_part");
+
+  svxImportData d;
+  check_api(cvxFileImportInit(&d, type, nullptr), "cvxFileImportInit");
+  d.type = type;
+  to_ansi_path(path, d.filePath, "path");
+  d.importTo = target == "new_file" ? 2 : 0;
+  std::vector<int> before = target == "current_part" ? inq_shape_ids() : std::vector<int>();
+  check_api(cvxFileImport(&d), "cvxFileImport");
+  cvxDispZoomAll(1);
+  return {{"file", current_file_utf8()}, {"part", current_root_utf8()}, {"shapes", inq_shape_ids()}, {"shapes_before", before}};
+}
+
 json h_screenshot(const json& p) {
   int w = p.value("width", 800), h = p.value("height", 600);
   if (w < 64 || h < 64 || w > 4096 || h > 4096) invalid_input("width/height 必须在 64..4096 之间");
+  apply_view(p.value("view", std::string()), p.value("display_mode", std::string()));
 
   std::wstring dir = screenshot_dir();
   CreateDirectoryW(dir.c_str(), nullptr);  // ok if it already exists
@@ -173,6 +238,9 @@ void register_file_handlers(std::map<std::string, Handler>& m) {
   m["save_part"] = h_save_part;
   m["export_step"] = h_export_step;
   m["screenshot"] = h_screenshot;
+  m["set_view"] = h_set_view;
+  m["open_file"] = h_open_file;
+  m["import_file"] = h_import_file;
   m["run_command"] = h_run_command;
   m["undo"] = h_undo;
   m["redo"] = h_redo;

@@ -825,6 +825,214 @@ json h_add_thread(const json& p) {
   return {{"face_id", face}, {"diameter", t.Diameter}, {"pitch", t.Pitch}, {"length", t.Length}};
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Transform and shape-editing features: move/rotate, scale, rib, thicken, trim, split, extend face
+// ---------------------------------------------------------------------------------------------------------------
+// Several of these report success without doing anything (like boolean/mirror), so compare the geometry fingerprint.
+void require_geometry_change(const std::vector<std::string>& before, const char* code, const std::string& what, const std::string& hint) {
+  if (before == shapes_signature()) throw ApiError(code, what, hint + " 已回滚。");
+}
+
+json h_move_shapes(const json& p) {
+  std::vector<int> ids = ids_of(p.at("shape_ids"), "shape_ids");
+  if (ids.empty()) invalid_input("shape_ids 不能为空");
+  for (int id : ids) require_shape(id);
+  svxVector t{0, 0, 0};
+  bool has_t = p.contains("translate") && !p["translate"].is_null();
+  if (has_t) t = to_vector(p["translate"], "translate");
+  bool has_r = p.contains("rotate") && p["rotate"].is_object();
+  // p' = R p + c, with R a rotation about the axis through `ap` (Rodrigues) followed by the translation.
+  double R[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+  svxPoint ap{0, 0, 0};
+  if (has_r) {
+    const json& r = p["rotate"];
+    ap = to_point(r.at("axis_point"), "rotate.axis_point");
+    svxVector d = to_vector(r.at("axis_direction"), "rotate.axis_direction");
+    double dl = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+    if (dl < 1e-12) invalid_input("rotate.axis_direction 不能为零向量");
+    double kx = d.x / dl, ky = d.y / dl, kz = d.z / dl;
+    double a = r.at("angle").get<double>() * 3.14159265358979323846 / 180.0, c = std::cos(a), s = std::sin(a), v = 1 - c;
+    R[0][0] = c + kx * kx * v;      R[0][1] = kx * ky * v - kz * s; R[0][2] = kx * kz * v + ky * s;
+    R[1][0] = ky * kx * v + kz * s; R[1][1] = c + ky * ky * v;      R[1][2] = ky * kz * v - kx * s;
+    R[2][0] = kz * kx * v - ky * s; R[2][1] = kz * ky * v + kx * s; R[2][2] = c + kz * kz * v;
+  }
+  if (!has_t && !has_r) invalid_input("需要 translate 和/或 rotate");
+  if (has_t && t.x == 0 && t.y == 0 && t.z == 0 && !has_r) invalid_input("translate 不能为零向量");
+  double rc[3] = {R[0][0] * ap.x + R[0][1] * ap.y + R[0][2] * ap.z, R[1][0] * ap.x + R[1][1] * ap.y + R[1][2] * ap.z,
+                  R[2][0] * ap.x + R[2][1] * ap.y + R[2][2] * ap.z};
+  svxMatrix m{};
+  m.identity = 0;
+  // field "<axis><component>": the x-axis (image of the unit x vector) is (xx, xy, xz); xt/yt/zt is the offset.
+  m.xx = R[0][0]; m.xy = R[1][0]; m.xz = R[2][0];
+  m.yx = R[0][1]; m.yy = R[1][1]; m.yz = R[2][1];
+  m.zx = R[0][2]; m.zy = R[1][2]; m.zz = R[2][2];
+  m.xt = ap.x - rc[0] + t.x;
+  m.yt = ap.y - rc[1] + t.y;
+  m.zt = ap.z - rc[2] + t.z;
+  std::vector<std::string> sig = shapes_signature();
+  DispGuard guard;
+  check_api(cvxPartMoveTransformList((int)ids.size(), ids.data(), &m), "cvxPartMoveTransformList");
+  json out = shapes_summary();
+  out["note"] = "移动/旋转后实体 id 可能改变；以返回的 shapes 为准。";
+  // A pure rotation of a symmetric solid about its own centre can legitimately leave the fingerprint unchanged, so only translations are checked.
+  if (!has_r) require_geometry_change(sig, "MOVE_NO_EFFECT", "移动没有改变任何实体的位置", "确认 shape_ids 是实体，translate 不为零。");
+  return out;
+}
+
+json h_scale_shapes(const json& p) {
+  std::vector<int> ids = ids_of(p.at("shape_ids"), "shape_ids");
+  if (ids.empty()) invalid_input("shape_ids 不能为空");
+  for (int id : ids) require_shape(id);
+  double sx, sy, sz;
+  const json& s = p.at("scale");
+  if (s.is_number()) sx = sy = sz = s.get<double>();
+  else {
+    svxPoint v = to_point(s, "scale");
+    sx = v.x; sy = v.y; sz = v.z;
+  }
+  if (!(sx > 0 && sy > 0 && sz > 0)) invalid_input("缩放系数必须为正");
+  svxPoint c{0, 0, 0};
+  if (p.contains("center") && !p["center"].is_null()) c = to_point(p["center"], "center");
+  std::vector<std::string> sig = shapes_signature();
+  DispGuard guard;
+  check_api(cvxPartScale2((int)ids.size(), ids.data(), sx, sy, sz, 0, &c), "cvxPartScale2");
+  json out = shapes_summary();
+  out["note"] = "缩放后实体 id 可能改变；以返回的 shapes 为准。";
+  if (sx != 1 || sy != 1 || sz != 1) require_geometry_change(sig, "SCALE_NO_EFFECT", "缩放没有改变任何实体", "确认 shape_ids 是实体且系数不全为 1。");
+  return out;
+}
+
+json h_create_rib(const json& p) {
+  int shape = p.contains("shape_id") && !p["shape_id"].is_null() ? p["shape_id"].get<int>() : -1;
+  if (shape != -1) require_shape(shape);
+  double w = p.at("thickness").get<double>();
+  if (!(w > 0)) invalid_input("thickness 必须为正");
+  DispGuard guard;
+  int first = 0;
+  int list = make_curvelist(p.at("profile"), &first);
+  svxRibData r;
+  check_api(cvxPartRibInit(&r), "cvxPartRibInit");
+  r.idShape = shape;
+  r.idParent = list;
+  r.idProfile = first;
+  r.direction = p.value("perpendicular", false) ? 1 : 0;
+  std::string side = p.value("side", std::string("both"));
+  r.widthType = side == "first" ? 0 : side == "second" ? 2 : 1;
+  r.width = w;
+  r.angle = 0;
+  r.flipDir = p.value("flip", false) ? 1 : 0;
+  std::vector<std::string> sig = shapes_signature();
+  int id = 0;
+  check_api(cvxPartRib(&r, &id), "cvxPartRib");
+  require_geometry_change(sig, "RIB_NO_EFFECT", "加强筋没有改变任何实体",
+                          "轮廓线必须是开放的，并且两端要接触到实体表面；用 flip 反转材料方向，或检查 shape_id。");
+  json out = shapes_summary();
+  out["feature_id"] = id;
+  return out;
+}
+
+json h_thicken_faces(const json& p) {
+  std::vector<int> faces = ids_of(p.at("face_ids"), "face_ids");
+  if (faces.empty()) invalid_input("face_ids 不能为空");
+  double t = p.at("thickness").get<double>();
+  if (t == 0) invalid_input("thickness 不能为 0（正=向外，负=向内）");
+  svxThickenData d;
+  check_api(cvxPartThickenInit(&d), "cvxPartThickenInit");
+  d.type = 1;
+  d.thick = t;
+  d.numFaces = (int)faces.size();
+  d.idFaces = faces.data();
+  std::vector<std::string> sig = shapes_signature();
+  DispGuard guard;
+  int id = 0;
+  check_api(cvxPartThicken(&d, &id), "cvxPartThicken");
+  json out = shapes_summary();
+  out["new_shape_id"] = id;
+  return out;
+}
+
+// Cutters: either an explicit list of face/shape ids or a plane (given as origin + normal).
+std::vector<int> cutter_ids(const json& p, bool* made_plane) {
+  *made_plane = false;
+  std::vector<int> c;
+  if (p.contains("cutter_ids") && !p["cutter_ids"].is_null()) c = ids_of(p["cutter_ids"], "cutter_ids");
+  if (p.contains("plane") && !p["plane"].is_null()) {
+    c.push_back(make_datum_plane(p["plane"]));
+    *made_plane = true;
+  }
+  if (c.empty()) invalid_input("需要 plane 或 cutter_ids");
+  return c;
+}
+
+json h_trim_shape(const json& p) {
+  int shape = p.at("shape_id").get<int>();
+  require_shape(shape);
+  DispGuard guard;
+  bool mp;
+  std::vector<int> cutters = cutter_ids(p, &mp);
+  svxTrimData t;
+  check_api(cvxPartTrimInit(&t), "cvxPartTrimInit");
+  t.numBase = 1;
+  t.idBase = &shape;
+  t.numTrimm = (int)cutters.size();
+  t.idTrimmer = cutters.data();
+  t.flip = p.value("flip", false) ? 1 : 0;
+  t.trimCap = 1;
+  t.keepTrimm = mp ? 1 : (p.value("keep_cutters", false) ? 1 : 0);
+  t.extend = 1;
+  std::vector<std::string> sig = shapes_signature();
+  int n = 0;
+  int* ids = nullptr;
+  check_api(cvxPartTrim(&t, &n, &ids), "cvxPartTrim");
+  if (ids) cvxMemFree(reinterpret_cast<void**>(&ids));
+  require_geometry_change(sig, "TRIM_NO_EFFECT", "修剪没有改变实体", "平面必须穿过实体；用 flip 选择保留哪一侧。");
+  return shapes_summary();
+}
+
+json h_split_shape(const json& p) {
+  int shape = p.at("shape_id").get<int>();
+  require_shape(shape);
+  DispGuard guard;
+  bool mp;
+  std::vector<int> cutters = cutter_ids(p, &mp);
+  svxDivideData d;
+  check_api(cvxPartDivideInit(&d), "cvxPartDivideInit");
+  d.numBase = 1;
+  d.idBase = &shape;
+  d.numCutter = (int)cutters.size();
+  d.idCutters = cutters.data();
+  d.keepCutter = mp ? 1 : (p.value("keep_cutters", false) ? 1 : 0);
+  d.trimCap = 1;
+  d.extend = 1;
+  std::vector<int> before = inq_shape_ids();
+  int n = 0;
+  int* ids = nullptr;
+  check_api(cvxPartDivide(&d, &n, &ids), "cvxPartDivide");
+  if (ids) cvxMemFree(reinterpret_cast<void**>(&ids));
+  json out = shapes_summary();
+  if (inq_shape_ids().size() <= before.size())
+    throw ApiError("SPLIT_NO_RESULT", "分割没有产生新的实体", "平面必须穿过实体内部。已回滚。");
+  return out;
+}
+
+json h_extend_face(const json& p) {
+  int face = p.at("face_id").get<int>();
+  double dist = p.at("distance").get<double>();
+  if (!(dist > 0)) invalid_input("distance 必须为正");
+  svxExtendData e;
+  check_api(cvxPartExtendFaceInit(&e), "cvxPartExtendFaceInit");
+  e.idFace = face;
+  e.cntEdge = 0;  // all edges of the face
+  e.fDist = dist;
+  std::vector<std::string> sig = shapes_signature();
+  DispGuard guard;
+  int id = 0;
+  check_api(cvxPartExtendFace(&e, &id), "cvxPartExtendFace");
+  json out = shapes_summary();
+  out["feature_id"] = id;
+  return out;
+}
+
 json h_list_features(const json&) {
   int n = 0;
   int* ids = nullptr;
@@ -854,6 +1062,13 @@ void register_part_handlers(std::map<std::string, Handler>& m) {
   m["draft_faces"] = h_draft_faces;
   m["sweep"] = h_sweep;
   m["loft"] = h_loft;
+  m["move_shapes"] = h_move_shapes;
+  m["scale_shapes"] = h_scale_shapes;
+  m["create_rib"] = h_create_rib;
+  m["thicken_faces"] = h_thicken_faces;
+  m["trim_shape"] = h_trim_shape;
+  m["split_shape"] = h_split_shape;
+  m["extend_face"] = h_extend_face;
   m["helical_sweep"] = h_helical_sweep;
   m["add_thread"] = h_add_thread;
   m["list_features"] = h_list_features;

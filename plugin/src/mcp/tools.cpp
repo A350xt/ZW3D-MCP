@@ -134,6 +134,19 @@ std::string combine_of(const json& a) {
   return s;
 }
 
+// A string argument restricted to the given choices.
+std::string enum_of(const json& a, const char* k, std::initializer_list<const char*> choices) {
+  const json& v = req(a, k);
+  std::string s = v.is_string() ? v.get<std::string>() : "";
+  std::string list;
+  for (const char* c : choices) {
+    if (s == c) return s;
+    list += (list.empty() ? "" : ", ") + std::string(c);
+  }
+  bad(std::string(k) + " must be one of " + list);
+  return s;
+}
+
 json pts_json(const std::vector<val::V3>& pts) {
   json out = json::array();
   for (const auto& p : pts) out.push_back(val::to_json(p));
@@ -560,6 +573,99 @@ void build() {
                                    {"length", val::positive(req(a, "length"), "length")}});
       });
 
+  add("move_shapes",
+      "Move and/or rotate solids. translate: [dx,dy,dz] mm. rotate: {axis_point, axis_direction, angle} in degrees (right-hand rule); the rotation is applied first, then the "
+      "translation. Ids may change: use the returned shapes.",
+      schema({{"shape_ids", t_ids()}, {"translate", t_pt()},
+              {"rotate", t_obj("{\"axis_point\":[x,y,z],\"axis_direction\":[x,y,z],\"angle\":degrees}")}},
+             {"shape_ids"}),
+      [](const json& a) {
+        json p = {{"shape_ids", val::id_list(req(a, "shape_ids"), "shape_ids")}};
+        if (!has(a, "translate") && !has(a, "rotate")) bad("give translate and/or rotate");
+        if (has(a, "translate")) p["translate"] = val::to_json(val::point(arg(a, "translate"), "translate"));
+        if (has(a, "rotate")) {
+          const json& r = arg(a, "rotate");
+          if (!r.is_object()) bad("rotate must be {axis_point, axis_direction, angle}");
+          p["rotate"] = {{"axis_point", val::to_json(val::point(req(r, "axis_point"), "rotate.axis_point"))},
+                         {"axis_direction", val::to_json(val::vector(req(r, "axis_direction"), "rotate.axis_direction"))},
+                         {"angle", val::number(req(r, "angle"), "rotate.angle")}};
+        }
+        return call("move_shapes", p);
+      });
+
+  add("scale_shapes",
+      "Scale solids about a centre point (default the origin). scale: one positive number for uniform scaling or [sx,sy,sz]. Ids may change: use the returned shapes.",
+      schema({{"shape_ids", t_ids()}, {"scale", {{"anyOf", json::array({t_num(), t_pt()})}}}, {"center", t_pt()}}, {"shape_ids", "scale"}),
+      [](const json& a) {
+        json p = {{"shape_ids", val::id_list(req(a, "shape_ids"), "shape_ids")}};
+        const json& s = req(a, "scale");
+        if (s.is_number()) p["scale"] = val::positive(s, "scale");
+        else {
+          json v = json::array();
+          if (!s.is_array() || s.size() != 3) bad("scale must be a positive number or [sx, sy, sz]");
+          for (size_t i = 0; i < 3; ++i) v.push_back(val::positive(s[i], "scale[i]"));
+          p["scale"] = v;
+        }
+        if (has(a, "center")) p["center"] = val::to_json(val::point(arg(a, "center"), "center"));
+        return call("scale_shapes", p);
+      });
+
+  add("create_rib",
+      "Add a rib (stiffener). profile: an OPEN chain of connected 3D line/arc segments (same format as sweep's path) that touches the solid's surface at both ends; "
+      "thickness: rib width (mm). side: both (default, symmetric), first or second; perpendicular=true extrudes perpendicular to the profile plane instead of parallel; "
+      "flip reverses the material direction. shape_id is optional (auto-detect). Fails with RIB_NO_EFFECT if nothing was added.",
+      schema({{"profile", t_segments("Open chain of line/arc segments (3D).")}, {"thickness", t_num()}, {"shape_id", t_int()},
+              {"side", t_enum({"both", "first", "second"}, "both")}, {"perpendicular", t_bool()}, {"flip", t_bool()}},
+             {"profile", "thickness"}),
+      [](const json& a) {
+        json p = {{"profile", val::path_segments(req(a, "profile"), "profile")}, {"thickness", val::positive(req(a, "thickness"), "thickness")},
+                  {"perpendicular", bool_or(a, "perpendicular", false)}, {"flip", bool_or(a, "flip", false)}};
+        if (has(a, "shape_id")) p["shape_id"] = val::one_id(arg(a, "shape_id"), "shape_id");
+        if (has(a, "side")) p["side"] = enum_of(a, "side", {"both", "first", "second"});
+        return call("create_rib", p);
+      });
+
+  add("thicken_faces",
+      "Create a solid by thickening faces (face_ids from list_faces). thickness in mm: positive = outward, negative = inward (not 0).",
+      schema({{"face_ids", t_ids()}, {"thickness", t_num()}}, {"face_ids", "thickness"}),
+      [](const json& a) {
+        double t = val::number(req(a, "thickness"), "thickness");
+        if (t == 0) bad("thickness must not be 0");
+        return call("thicken_faces", {{"face_ids", val::id_list(req(a, "face_ids"), "face_ids")}, {"thickness", t}});
+      });
+
+  add("trim_shape",
+      "Cut away one side of a solid with a plane ({origin, normal}, same format as mirror) or with cutter faces/solids (cutter_ids). The side the normal points to is "
+      "removed unless flip=true. Fails with TRIM_NO_EFFECT if the cutter does not pass through the solid.",
+      schema({{"shape_id", t_int()}, {"plane", t_obj("{\"origin\":[x,y,z],\"normal\":[x,y,z]}")}, {"cutter_ids", t_ids()}, {"flip", t_bool()}, {"keep_cutters", t_bool()}},
+             {"shape_id"}),
+      [](const json& a) {
+        json p = {{"shape_id", val::one_id(req(a, "shape_id"), "shape_id")}, {"flip", bool_or(a, "flip", false)}, {"keep_cutters", bool_or(a, "keep_cutters", false)}};
+        if (!has(a, "plane") && !has(a, "cutter_ids")) bad("give plane and/or cutter_ids");
+        if (has(a, "plane")) p["plane"] = val::mirror_plane(arg(a, "plane"));
+        if (has(a, "cutter_ids")) p["cutter_ids"] = val::id_list(arg(a, "cutter_ids"), "cutter_ids");
+        return call("trim_shape", p);
+      });
+
+  add("split_shape",
+      "Split a solid into separate solids with a plane ({origin, normal}) or cutter faces/solids (cutter_ids). Both halves are kept. Fails with SPLIT_NO_RESULT if the "
+      "cutter does not pass through the solid.",
+      schema({{"shape_id", t_int()}, {"plane", t_obj("{\"origin\":[x,y,z],\"normal\":[x,y,z]}")}, {"cutter_ids", t_ids()}, {"keep_cutters", t_bool()}}, {"shape_id"}),
+      [](const json& a) {
+        json p = {{"shape_id", val::one_id(req(a, "shape_id"), "shape_id")}, {"keep_cutters", bool_or(a, "keep_cutters", false)}};
+        if (!has(a, "plane") && !has(a, "cutter_ids")) bad("give plane and/or cutter_ids");
+        if (has(a, "plane")) p["plane"] = val::mirror_plane(arg(a, "plane"));
+        if (has(a, "cutter_ids")) p["cutter_ids"] = val::id_list(arg(a, "cutter_ids"), "cutter_ids");
+        return call("split_shape", p);
+      });
+
+  add("extend_face",
+      "Extend a face outward past all of its edges by distance (mm, > 0). face_id from list_faces.",
+      schema({{"face_id", t_int()}, {"distance", t_num()}}, {"face_id", "distance"}),
+      [](const json& a) {
+        return call("extend_face", {{"face_id", val::one_id(req(a, "face_id"), "face_id")}, {"distance", val::positive(req(a, "distance"), "distance")}});
+      });
+
   add("list_features",
       "List the features of the active part's history: feature_id, name (e.g. 'Extrude1') and template. Use the ids with pattern_*/mirror feature targets and with "
       "get_feature_data / set_feature_value.",
@@ -696,13 +802,68 @@ void build() {
   add("get_bounding_box", "Axis-aligned bounding box {min:[x,y,z], max:[x,y,z], size:[dx,dy,dz]} in mm.", schema({{"shape_id", t_int()}}, {"shape_id"}),
       [](const json& a) { return call("get_bounding_box", {{"shape_id", val::one_id(req(a, "shape_id"), "shape_id")}}); });
 
-  add("screenshot", "Capture the current ZW3D view as a PNG image (zoomed to fit unless zoom_all=false).",
-      schema({{"width", t_int()}, {"height", t_int()}, {"zoom_all", t_bool()}}), [](const json& a) {
+  add("screenshot",
+      "Capture the current ZW3D view as a PNG image (zoomed to fit unless zoom_all=false). view switches to a standard orientation first (front, back, top, bottom, "
+      "right, left, iso) so you can inspect every side; display_mode: shaded, shaded_edges, wireframe, hidden (the view and mode stay changed afterwards).",
+      schema({{"width", t_int()}, {"height", t_int()}, {"zoom_all", t_bool()},
+              {"view", t_enum({"front", "back", "top", "bottom", "right", "left", "iso"})},
+              {"display_mode", t_enum({"shaded", "shaded_edges", "wireframe", "hidden"})}}),
+      [](const json& a) {
         int w = int_or(a, "width", 800), h = int_or(a, "height", 600);
         if (!(64 <= w && w <= 4096 && 64 <= h && h <= 4096)) bad("width and height must be between 64 and 4096");
-        ToolCall c = call("screenshot", {{"width", w}, {"height", h}, {"zoom_all", bool_or(a, "zoom_all", true)}});
+        json p = {{"width", w}, {"height", h}, {"zoom_all", bool_or(a, "zoom_all", true)}};
+        if (has(a, "view")) p["view"] = enum_of(a, "view", {"front", "back", "top", "bottom", "right", "left", "iso"});
+        if (has(a, "display_mode")) p["display_mode"] = enum_of(a, "display_mode", {"shaded", "shaded_edges", "wireframe", "hidden"});
+        ToolCall c = call("screenshot", p);
         c.screenshot = true;
         return c;
+      });
+
+  add("set_view",
+      "Change the ZW3D viewport without taking a picture: view = front, back, top, bottom, right, left or iso; display_mode = shaded, shaded_edges, wireframe or hidden.",
+      schema({{"view", t_enum({"front", "back", "top", "bottom", "right", "left", "iso"})},
+              {"display_mode", t_enum({"shaded", "shaded_edges", "wireframe", "hidden"})}, {"zoom_all", t_bool()}}),
+      [](const json& a) {
+        json p = {{"zoom_all", bool_or(a, "zoom_all", true)}};
+        if (has(a, "view")) p["view"] = enum_of(a, "view", {"front", "back", "top", "bottom", "right", "left", "iso"});
+        if (has(a, "display_mode")) p["display_mode"] = enum_of(a, "display_mode", {"shaded", "shaded_edges", "wireframe", "hidden"});
+        if (!has(a, "view") && !has(a, "display_mode")) bad("give view and/or display_mode");
+        return call("set_view", p);
+      });
+
+  add("open_file",
+      "Open an existing ZW3D file (.Z3PRT / .Z3 / .Z3ASM / .Z3DRW) and make it active, so you can inspect or modify an existing model. Returns the solids it contains.",
+      schema({{"path", t_str("Full path of the file.")}}, {"path"}),
+      [](const json& a) { return call("open_file", {{"path", str_req(a, "path")}}); });
+
+  add("import_file",
+      "Import a neutral CAD file: .step/.stp, .x_t (Parasolid), .sat, .igs/.iges, .stl. target 'new_file' (default) opens it as a new ZW3D file, 'current_part' adds "
+      "it to the active part. Returns the solids present afterwards.",
+      schema({{"path", t_str("Full path of the file to import.")}, {"target", t_enum({"new_file", "current_part"}, "new_file")}}, {"path"}),
+      [](const json& a) {
+        return call("import_file", {{"path", str_req(a, "path")}, {"target", has(a, "target") ? enum_of(a, "target", {"new_file", "current_part"}) : std::string("new_file")}});
+      });
+
+  add("delete_shapes", "Delete solids (shape_ids from list_shapes). Ids are renumbered afterwards, so list_shapes again.",
+      schema({{"shape_ids", t_ids()}}, {"shape_ids"}),
+      [](const json& a) { return call("delete_shapes", {{"shape_ids", val::id_list(req(a, "shape_ids"), "shape_ids")}}); });
+
+  add("delete_features", "Delete history features (feature_ids from list_features); the part regenerates and ids are renumbered.",
+      schema({{"feature_ids", t_ids()}}, {"feature_ids"}),
+      [](const json& a) { return call("delete_features", {{"feature_ids", val::id_list(req(a, "feature_ids"), "feature_ids")}}); });
+
+  add("suppress_features", "Suppress (default) or unsuppress history features without deleting them; the part regenerates and ids are renumbered.",
+      schema({{"feature_ids", t_ids()}, {"suppress", t_bool("true = suppress (default), false = restore")}}, {"feature_ids"}),
+      [](const json& a) {
+        return call("suppress_features", {{"feature_ids", val::id_list(req(a, "feature_ids"), "feature_ids")}, {"suppress", bool_or(a, "suppress", true)}});
+      });
+
+  add("measure_distance",
+      "Minimum distance (mm) between two entities of the active part - solids, faces or edges, ids from list_shapes / list_faces / list_edges - with the closest point on each. "
+      "Distance 0 means they touch or overlap (clearance / interference check).",
+      schema({{"id1", t_int()}, {"id2", t_int()}}, {"id1", "id2"}),
+      [](const json& a) {
+        return call("measure_distance", {{"id1", val::one_id(req(a, "id1"), "id1")}, {"id2", val::one_id(req(a, "id2"), "id2")}});
       });
 
   add("run_command",
