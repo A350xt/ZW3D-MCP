@@ -22,7 +22,7 @@ const char* const kInstructions = R"GUIDE(Controls a running ZW3D 2025+ (not ZWC
 
 # Choosing a tool
 - Simple blocks: create_box, create_cylinder (axis +Z from the bottom centre), create_sphere.
-- Prismatic or turned parts: extrude_polygon / revolve_polygon for a closed planar polygon; extrude_profile / revolve_profile when arcs or circles are needed. Use sketch_extrude / sketch_revolve when you want a real, dimensioned sketch in the feature tree (supports inner loops = holes).
+- Profile-based parts (prismatic, turned, with holes): ALWAYS DRAW A SKETCH FIRST. Use sketch_extrude / sketch_revolve whenever the outline lies in a plane (lines, arcs, circles, inner loops = holes); the sketch stays in the feature tree and the part remains editable. Do NOT build loose curves and extrude them: extrude_polygon / revolve_polygon / extrude_profile / revolve_profile exist only as a fallback for outlines a sketch cannot express (e.g. a profile on an arbitrary 3D plane that sketch_extrude rejects), and they leave stray wireframe with no editable sketch. Plain blocks, cylinders and spheres: create_box / create_cylinder / create_sphere.
 - Combine solids with boolean (add / subtract / intersect) or the `combine` argument of the profile tools (none = new body, add, remove, intersect). Subtracting a tool that does not overlap the base is refused.
 - Finishing: fillet_edges, chamfer_edges, shell_shape, draft_faces, create_hole (needs a planar face_id from list_faces), pattern_linear, pattern_circular, mirror, sweep, loft.
 - Reshaping: move_shapes (translate / rotate), scale_shapes, create_rib, thicken_faces, trim_shape and split_shape (plane or cutter faces), extend_face. Cleanup: delete_shapes, delete_features, suppress_features, rename_feature. Look: set_color (face ids), screenshot with view / display_mode, set_view. Measure: measure_distance (0 = touching / interfering).
@@ -261,7 +261,7 @@ void build() {
 
   // ============================================================ profile features
   add("extrude_polygon",
-      "Extrude a closed planar polygon into a solid.\n\npoints: vertices [[x,y,z],...] in order around the outline (>=3, planar, do not repeat the "
+      "FALLBACK - prefer sketch_extrude (a real, editable sketch); use this only when a sketch cannot express the outline. Extrude a closed planar polygon of loose wireframe into a solid.\n\npoints: vertices [[x,y,z],...] in order around the outline (>=3, planar, do not repeat the "
       "first point). distance: end offset in mm from the profile plane along the extrusion direction (> start). start: start offset in mm "
       "(default 0). direction: optional extrusion direction vector; by default the profile normal is used. Pass it explicitly (e.g. [0,0,1]) when "
       "the sign of the normal matters. draft_angle in degrees. Check the returned bounding box to confirm the extrusion went the intended way.",
@@ -276,7 +276,7 @@ void build() {
       }, true);
 
   add("revolve_polygon",
-      "Revolve a closed planar polygon around an axis.\n\npoints: profile vertices [[x,y,z],...] (>=3, planar, same plane as the axis). "
+      "FALLBACK - prefer sketch_revolve (a real, editable sketch). Revolve a closed planar polygon of loose wireframe around an axis.\n\npoints: profile vertices [[x,y,z],...] (>=3, planar, same plane as the axis). "
       "axis_point/axis_direction define the rotation axis; the profile must not cross the axis. angle: end angle in degrees (default 360, full turn), "
       "start_angle in degrees (default 0).",
       schema({{"points", t_arr(t_pt())}, {"axis_point", t_pt()}, {"axis_direction", t_pt()}, {"angle", t_num()}, {"start_angle", t_num()}, {"combine", t_combine()}},
@@ -292,7 +292,7 @@ void build() {
       }, true);
 
   add("extrude_profile",
-      "Extrude a closed profile made of lines, arcs and circles (use this instead of extrude_polygon for round shapes).\n\n"
+      "FALLBACK - prefer sketch_extrude (a real, editable sketch that also takes lines, arcs and circles). Extrude a closed loose-wireframe profile of lines, arcs and circles.\n\n"
       "segments (mm), in order around the outline; the last end must equal the first start:\n"
       "  {\"type\":\"line\",\"start\":[x,y,z],\"end\":[x,y,z]}\n"
       "  {\"type\":\"arc\",\"start\":[..],\"through\":[..],\"end\":[..]}   (through = any point on the arc between start and end)\n"
@@ -309,7 +309,7 @@ void build() {
       }, true);
 
   add("revolve_profile",
-      "Revolve a closed profile of lines/arcs (same segment format as extrude_profile) around an axis. Typical use: a half cross-section of a shaft, "
+      "FALLBACK - prefer sketch_revolve (a real, editable sketch). Revolve a closed loose-wireframe profile of lines/arcs (same segment format as extrude_profile) around an axis. Typical use: a half cross-section of a shaft, "
       "pulley or bowl. Angles in degrees.",
       schema({{"segments", t_segments("Profile segments (3D), see extrude_profile.")}, {"axis_point", t_pt()}, {"axis_direction", t_pt()}, {"angle", t_num()},
               {"start_angle", t_num()}, {"combine", t_combine()}}, {"segments", "axis_point", "axis_direction"}),
