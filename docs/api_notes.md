@@ -231,3 +231,13 @@ The MCP/validation/HTTP layers were exercised offline with a throwaway stub host
 `ZwFeatureSpiralHelixCreate`). The tool therefore builds the sweep about the line through the world origin (profile shifted by `-axis_point`), moves the
 result by `+axis_point` with `cvxPartMoveTransformList`, and for whole turns verifies that the solid's bbox centre lies on the axis (`HELIX_AXIS_MISMATCH` otherwise).
 `combine != none` is applied afterwards with the normal `boolean` logic against `base_shape_id`. Still to confirm live: that ZW3D really uses the origin axis.
+
+## Assembly constraints: live failure and rework
+
+Live result: `lock` and the face constraints all returned -152 (`ZW_API_CMMD_EXEC_ERROR`) and `list_component_faces` returned an empty list.
+Causes found in the headers: (1) component pick paths were hand-built as `{-2, id}`; they are now produced by `cvxEntPathInit(idComp, 0, &path)`
+("entity path relative to the active root"); (2) `cvxCompInqOpenShapes` returns only OPEN (sheet) shapes, not all shapes. `list_component_faces` now
+reads the referenced part with `cvxCompInqPart` + `cvxPartInqShapes(file, part)` + `cvxPartInqShapeFaces` and prefixes the component path
+(face-in-component path layout `{..., COMP, FACE}` is still a guess; `cvxPartInqShapeFaces` may only work for the active part - the result says so).
+`lock` errors now include the two paths used. Next to try if it still fails: `ZwComponentActivate` + `cvxEntPathInqActive`, or the new
+`ZwConstraintCoincidentAdd` (szwEntityHandle via `ZwEntityPathTransfer`).

@@ -487,39 +487,55 @@ svxEntPath path_from_json(const json& v, const char* name) {
   return p;
 }
 
+// Pick path of a component entity of the active assembly, built by ZW3D itself (a hand-made {-2, id} path is rejected with -152).
+svxEntPath component_path(int comp) {
+  svxEntPath path{};
+  check_api(cvxEntPathInit(comp, 0, &path), "cvxEntPathInit");
+  return path;
+}
+
 json h_list_component_faces(const json& p) {
   int comp = p.at("component_id").get<int>();
-  svxEntPath cp{};
-  cp.Count = 2;
-  cp.Id[0] = -2;
-  cp.Id[1] = comp;
-  int n = 0;
-  svxEntPath* shapes = nullptr;
-  check_api(cvxCompInqOpenShapes(&cp, 1, &n, &shapes), "cvxCompInqOpenShapes");
-  json out = json::array();
+  svxEntPath cp = component_path(comp);
+  json out = {{"component_id", comp}, {"component_path", path_to_json(cp)}};
+
+  // Faces of the part the component refers to. Their ids are those of that part; the pick path of a face inside the component is the
+  // component path followed by the face id.
+  char file[512] = {0}, part[128] = {0};
+  int r = cvxCompInqPart(comp, file, sizeof(file), part, sizeof(part));
+  out["file"] = ansi_to_utf8(file);
+  out["part"] = ansi_to_utf8(part);
+  if (r != 0) {
+    out["note"] = "无法读取组件所引用的零件 (api_code=" + std::to_string(r) + ")。";
+    return out;
+  }
+  int ns = 0;
+  int* shapes = nullptr;
+  int rs = cvxPartInqShapes(file, part, &ns, &shapes);
+  json sl = json::array();
   std::string note;
-  for (int i = 0; i < n; ++i) {
+  if (rs != 0) note = "cvxPartInqShapes 失败 (api_code=" + std::to_string(rs) + ")。";
+  for (int i = 0; rs == 0 && i < ns; ++i) {
     int nf = 0;
     int* faces = nullptr;
-    int shape = shapes[i].Id[shapes[i].Count - 1];
-    int r = cvxPartInqShapeFaces(shape, &nf, &faces);
+    int rf = cvxPartInqShapeFaces(shapes[i], &nf, &faces);
     json fl = json::array();
-    if (r == 0) {
+    if (rf == 0) {
       for (int k = 0; k < nf; ++k) {
-        svxEntPath fp = shapes[i];
+        svxEntPath fp = cp;
         if (fp.Count < V_PP_LEN) fp.Id[fp.Count++] = faces[k];
-        fl.push_back(path_to_json(fp));
+        fl.push_back({{"face_id_in_part", faces[k]}, {"path", path_to_json(fp)}});
       }
     } else {
-      note = "无法在该组件的上下文中读取面 (api_code=" + std::to_string(r) + ")；请在零件文件中用 list_faces 取得面信息，约束时使用组件级 lock。";
+      note = "无法读取实体的面 (cvxPartInqShapeFaces api_code=" + std::to_string(rf) + ")：该接口只作用于当前激活零件。";
     }
     if (faces) cvxMemFree(reinterpret_cast<void**>(&faces));
-    out.push_back({{"shape_path", path_to_json(shapes[i])}, {"face_paths", fl}});
+    sl.push_back({{"shape_id_in_part", shapes[i]}, {"faces", fl}});
   }
   if (shapes) cvxMemFree(reinterpret_cast<void**>(&shapes));
-  json res = {{"component_id", comp}, {"shapes", out}};
-  if (!note.empty()) res["note"] = note;
-  return res;
+  out["shapes"] = sl;
+  if (!note.empty()) out["note"] = note + " 可先用 add_constraint type=lock（只需组件 id）。";
+  return out;
 }
 
 json h_add_constraint(const json& p) {
@@ -531,13 +547,18 @@ json h_add_constraint(const json& p) {
   d.lockRotation = 0;
   int id = 0;
   if (type == "lock") {
-    svxEntPath a{}, b{};
-    a.Count = b.Count = 2;
-    a.Id[0] = b.Id[0] = -2;
-    a.Id[1] = p.at("component1").get<int>();
-    b.Id[1] = p.at("component2").get<int>();
-    check_api(cvxCompAddLockCons(&a, &b, &d, &id), "cvxCompAddLockCons");
-    return {{"constraint_id", id}, {"type", type}};
+    svxEntPath a = component_path(p.at("component1").get<int>()), b = component_path(p.at("component2").get<int>());
+    int r = cvxCompAddLockCons(&a, &b, &d, &id);
+    if (r != 0) {
+      try {
+        check_api(r, "cvxCompAddLockCons");
+      } catch (ApiError& e) {
+        e.hint = "路径 component1=" + path_to_json(a).dump() + " component2=" + path_to_json(b).dump() +
+                 "。确认两个 component_id 来自 list_components、当前激活的是装配文件，且两个组件没有被固定(Anchor)。原提示: " + e.hint;
+        throw;
+      }
+    }
+    return {{"constraint_id", id}, {"type", type}, {"component1_path", path_to_json(a)}, {"component2_path", path_to_json(b)}};
   }
   svxEntPath e1 = path_from_json(p.at("entity1"), "entity1"), e2 = path_from_json(p.at("entity2"), "entity2");
   if (type == "coincident") check_api(cvxCompAddCoincidentCons(&e1, nullptr, &e2, nullptr, &d, &id), "cvxCompAddCoincidentCons");
