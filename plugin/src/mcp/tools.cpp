@@ -11,12 +11,32 @@
 namespace mcp {
 using val::bad;
 
-const char* const kInstructions =
-    "Controls a running ZW3D 2025+ (not ZWCAD). Units: millimetres and degrees. "
-    "Typical loop: new_part -> create_*/extrude_polygon/revolve_polygon/boolean -> "
-    "get_mass_props / get_bounding_box / screenshot -> fix. Every creation tool returns the new "
-    "shape_id plus its bounding box and volume so you can verify without extra calls. "
-    "Solids are referenced by integer shape_id.";
+// Built-in usage guide: sent to every client as the `instructions` of initialize and offered as the prompt "zw3d_guide".
+const char* const kInstructions = R"GUIDE(Controls a running ZW3D 2025+ (not ZWCAD) through its API. Units: millimetres and degrees. Points are [x, y, z].
+
+# Workflow
+1. ping to check the connection. new_part creates a file (.Z3PRT) and makes it active; nothing can be modeled before that.
+2. Model with ONE tool call per design step. Every modeling tool returns the affected shape_id(s) with bounding box and volume: check them against your intent before the next step instead of calling extra queries.
+3. After a few steps verify with get_bounding_box / get_mass_props and look with screenshot. When something is wrong, undo (whole tool calls) or fix it with the editing tools, do not pile new geometry on top.
+4. save_part when done (give a path for Save As); export_step for exchange files.
+
+# Choosing a tool
+- Simple blocks: create_box, create_cylinder (axis +Z from the bottom centre), create_sphere.
+- Prismatic or turned parts: extrude_polygon / revolve_polygon for a closed planar polygon; extrude_profile / revolve_profile when arcs or circles are needed. Use sketch_extrude / sketch_revolve when you want a real, dimensioned sketch in the feature tree (supports inner loops = holes).
+- Combine solids with boolean (add / subtract / intersect) or the `combine` argument of the profile tools (none = new body, add, remove, intersect). Subtracting a tool that does not overlap the base is refused.
+- Finishing: fillet_edges, chamfer_edges, shell_shape, draft_faces, create_hole (needs a planar face_id from list_faces), pattern_linear, pattern_circular, mirror, sweep, loft.
+- Change an existing model without rebuilding: list_features -> get_feature_data -> set_feature_value (field ids come from get_feature_data); part variables via list_variables / add_variable / set_variable; sketch variables via list_sketch_variables / set_sketch_variable.
+- Inspect: list_shapes, list_faces, list_edges (face_id / edge_id for holes, fillets, shells), get_bounding_box, get_mass_props.
+- Assemblies and drawings (basic): new_assembly, insert_component (saved parts only), list_components, new_drawing (of a saved part).
+
+# Rules that avoid wasted calls
+- Use only ids you got from the most recent response. Regenerating the part (set_variable, set_feature_value, ...) RENUMBERS shape, face and edge ids; call list_shapes / list_faces / list_edges again afterwards.
+- Profiles must be closed and planar; give the plane/normal explicitly. Distances, radii and sizes must be positive (a negative distance would silently reverse a feature, so it is refused).
+- Fillet/chamfer radii must be smaller than the adjacent faces allow; try a smaller value if the call fails.
+- Failed calls are rolled back completely and return `[CODE] message  Hint: ...`. Read the code and hint and correct the arguments; do not retry the identical call.
+- Do not guess ids or field names: list first, then act. Prefer the typed tools; run_command is a disabled-by-default escape hatch.
+- The ZW3D UI is shared with a human: avoid unnecessary new_part calls (they open new files) and tell the user what you changed.
+)GUIDE";
 
 namespace {
 

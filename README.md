@@ -44,7 +44,8 @@ Without `ZW3D_MCP_TOKEN`, any local process can still call it (including `run_co
 
 ## Tools
 
-Units are millimetres and degrees; points are `[x, y, z]`.
+Units are millimetres and degrees; points are `[x, y, z]`. A usage guide (workflow, which tool to pick, common pitfalls) is built into the server:
+clients receive it automatically as the MCP `instructions`, and it is also available as the prompt `zw3d_guide`.
 
 **Session and files**
 

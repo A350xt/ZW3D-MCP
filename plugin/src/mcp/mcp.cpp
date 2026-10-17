@@ -26,7 +26,7 @@ json handle_initialize(const json& params) {
   for (const char* s : supported)
     if (wanted == s) version = s;
   return {{"protocolVersion", version},
-          {"capabilities", {{"tools", {{"listChanged", false}}}}},
+          {"capabilities", {{"tools", {{"listChanged", false}}}, {"prompts", {{"listChanged", false}}}}},
           {"serverInfo", {{"name", "zw3d-mcp"}, {"version", ZW3DMCP_VERSION}}},
           {"instructions", kInstructions}};
 }
@@ -94,7 +94,15 @@ json handle_message(const json& msg) {
     }
     if (method == "resources/list") return rpc_result(id, {{"resources", json::array()}});
     if (method == "resources/templates/list") return rpc_result(id, {{"resourceTemplates", json::array()}});
-    if (method == "prompts/list") return rpc_result(id, {{"prompts", json::array()}});
+    if (method == "prompts/list")
+      return rpc_result(id, {{"prompts", json::array({{{"name", "zw3d_guide"},
+                                                       {"description", "How to model in ZW3D with these tools: workflow, tool choice, and rules that avoid wasted calls"}}})}});
+    if (method == "prompts/get") {
+      std::string pname = params.is_object() && params.contains("name") && params["name"].is_string() ? params["name"].get<std::string>() : "";
+      if (pname != "zw3d_guide") return rpc_error(id, -32602, "Unknown prompt: " + pname);
+      return rpc_result(id, {{"description", "ZW3D modeling guide"},
+                             {"messages", json::array({{{"role", "user"}, {"content", {{"type", "text"}, {"text", kInstructions}}}}})}});
+    }
     if (method == "logging/setLevel") return rpc_result(id, json::object());
     return rpc_error(id, -32601, "Method not found: " + method);
   } catch (const std::exception& e) {
