@@ -566,7 +566,20 @@ json h_create_hole(const json& p) {
   if ((int)type == -99) invalid_input("hole_type 取值无效: " + kind, "可选: simple, counterbore, countersink");
   DispGuard guard;
   svxHoleData h;
-  check_api(cvxPartHoleInit(VX_GENERAL_HOLE, (int)type, &h), "cvxPartHoleInit");
+  // thread: {"major_diameter": mm, "pitch": mm, "length": mm?}  -> ZW3D thread hole with a custom thread; `diameter` is then the drilled (minor) diameter.
+  bool threaded = p.contains("thread") && p["thread"].is_object();
+  check_api(cvxPartHoleInit(threaded ? VX_THREAD_HOLE : VX_GENERAL_HOLE, (int)type, &h), "cvxPartHoleInit");
+  if (threaded) {
+    const json& t = p["thread"];
+    double major = t.at("major_diameter").get<double>(), pitch = t.at("pitch").get<double>();
+    if (!(major > 0) || !(pitch > 0)) invalid_input("thread.major_diameter 和 thread.pitch 必须为正");
+    if (!(major > dia)) invalid_input("thread.major_diameter 必须大于底孔直径 diameter", "螺纹孔：diameter 是底孔（小径），major_diameter 是螺纹大径，例如 M8x1.25: diameter≈6.8, major_diameter=8。");
+    h.ThreadType = VX_THREAD_CUSTOM;
+    h.ThreadSize[0] = 0;
+    h.ThreadDiameter = major;
+    h.ThreadPitch = pitch;
+    h.ThreadLength = t.contains("length") && !t["length"].is_null() ? t["length"].get<double>() : (through ? 0.0 : depth);
+  }
   h.idInsFace = face;
   h.Count = (int)pts.size();
   h.Points = pts.data();

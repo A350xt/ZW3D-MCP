@@ -1,6 +1,8 @@
 // Cleanup and measuring tools: delete, suppress, distance.
 #include <algorithm>
+#include <cstring>
 #include "handlers.h"
+#include "../encoding.h"
 #include "../errors.h"
 
 namespace {
@@ -51,9 +53,38 @@ json h_measure_distance(const json& p) {
   return out;
 }
 
+json h_set_color(const json& p) {
+  std::vector<int> ids = id_array(p.at("ids"), "ids");
+  const json& c = p.at("rgb");
+  if (!c.is_array() || c.size() != 3) invalid_input("rgb 必须是 [r, g, b]，各 0..255");
+  int v[3];
+  for (int i = 0; i < 3; ++i) {
+    if (!c[i].is_number_integer() || c[i].get<int>() < 0 || c[i].get<int>() > 255) invalid_input("rgb 每个分量必须是 0..255 的整数");
+    v[i] = c[i].get<int>();
+  }
+  svxColor col{(unsigned char)v[0], (unsigned char)v[1], (unsigned char)v[2]};
+  DispGuard guard;
+  check_api(cvxEntRgbSet(col, (int)ids.size(), ids.data()), "cvxEntRgbSet");
+  cvxDispRedraw();
+  return {{"ids", ids}, {"rgb", c},
+          {"note", "真彩色只对面生效；传入实体 id 时可能被映射到最接近的标准色。要整体上色请传 list_faces 的面 id。"}};
+}
+
+json h_rename_feature(const json& p) {
+  int id = p.at("feature_id").get<int>();
+  std::string name = utf8_to_ansi(p.at("name").get<std::string>());
+  vxName buf;
+  if (name.empty() || name.size() >= sizeof(buf)) invalid_input("name 不能为空且不超过 31 字节");
+  std::memcpy(buf, name.c_str(), name.size() + 1);
+  check_api(cvxPartHistRename(id, buf, nullptr), "cvxPartHistRename");
+  return {{"feature_id", id}, {"name", p["name"]}};
+}
+
 }  // namespace
 
 void register_extra_handlers(std::map<std::string, Handler>& m) {
+  m["set_color"] = h_set_color;
+  m["rename_feature"] = h_rename_feature;
   m["delete_shapes"] = h_delete_shapes;
   m["delete_features"] = h_delete_features;
   m["suppress_features"] = h_suppress_features;

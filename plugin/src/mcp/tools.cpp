@@ -437,7 +437,8 @@ void build() {
       "give depth (blind) or through=true. counterbore/countersink use diameter2 (default 1.6 x diameter) and depth2 (default 0.6 x diameter). Returns feature_id "
       "(usable by pattern_linear / pattern_circular / mirror) and the resulting shapes with bbox and volume.",
       schema({{"face_id", t_int()}, {"points", t_arr(t_pt())}, {"diameter", t_num()}, {"depth", t_num()}, {"through", t_bool()},
-              {"hole_type", t_enum({"simple", "counterbore", "countersink"}, "simple")}, {"diameter2", t_num()}, {"depth2", t_num()}},
+              {"hole_type", t_enum({"simple", "counterbore", "countersink"}, "simple")}, {"diameter2", t_num()}, {"depth2", t_num()},
+              {"thread", t_obj("Makes a threaded hole: {\"major_diameter\":mm,\"pitch\":mm,\"length\":mm?}. `diameter` is then the drilled (minor) diameter, e.g. M8x1.25: diameter 6.8, major_diameter 8, pitch 1.25.")}},
              {"face_id", "points", "diameter"}),
       [](const json& a) {
         const json& pts = req(a, "points");
@@ -455,6 +456,13 @@ void build() {
         }
         if (has(a, "diameter2")) p["diameter2"] = val::positive(arg(a, "diameter2"), "diameter2");
         if (has(a, "depth2")) p["depth2"] = val::positive(arg(a, "depth2"), "depth2");
+        if (has(a, "thread")) {
+          const json& t = arg(a, "thread");
+          if (!t.is_object()) bad("thread must be {major_diameter, pitch, length?}");
+          json tj = {{"major_diameter", val::positive(req(t, "major_diameter"), "thread.major_diameter")}, {"pitch", val::positive(req(t, "pitch"), "thread.pitch")}};
+          if (has(t, "length")) tj["length"] = val::positive(arg(t, "length"), "thread.length");
+          p["thread"] = tj;
+        }
         return call("create_hole", p);
       });
 
@@ -571,6 +579,26 @@ void build() {
         return call("add_thread", {{"face_id", val::one_id(req(a, "face_id"), "face_id")}, {"point", val::to_json(val::point(req(a, "point"), "point"))},
                                    {"diameter", val::positive(req(a, "diameter"), "diameter")}, {"pitch", val::positive(req(a, "pitch"), "pitch")},
                                    {"length", val::positive(req(a, "length"), "length")}});
+      });
+
+  add("set_color",
+      "Colour faces or solids with an RGB colour ([r,g,b], 0-255). True colour applies to faces: pass face ids from list_faces to paint a whole solid; solids / other "
+      "entities may be mapped to the nearest standard colour.",
+      schema({{"ids", t_ids("Face ids (preferred) or shape ids.")}, {"rgb", t_arr(t_int(), "[r, g, b], each 0-255", 3, 3)}}, {"ids", "rgb"}),
+      [](const json& a) {
+        const json& c = req(a, "rgb");
+        if (!c.is_array() || c.size() != 3) bad("rgb must be [r, g, b]");
+        for (const auto& v : c)
+          if (!v.is_number_integer() || v.get<int>() < 0 || v.get<int>() > 255) bad("each rgb component must be an integer 0-255");
+        return call("set_color", {{"ids", val::id_list(req(a, "ids"), "ids")}, {"rgb", c}});
+      });
+
+  add("rename_feature", "Rename a history feature (feature_id from list_features; name up to 31 bytes).",
+      schema({{"feature_id", t_int()}, {"name", t_str()}}, {"feature_id", "name"}),
+      [](const json& a) {
+        std::string n = trim(str_req(a, "name"));
+        if (n.empty() || n.size() > 31) bad("name must be 1-31 bytes");
+        return call("rename_feature", {{"feature_id", val::one_id(req(a, "feature_id"), "feature_id")}, {"name", n}});
       });
 
   add("move_shapes",
