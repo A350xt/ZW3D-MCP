@@ -780,6 +780,51 @@ json h_loft(const json& p) {
   return creation_result(combine, id);
 }
 
+// Helical (spiral) sweep: a closed profile is swept along a helix about `axis`, `turns` turns with `pitch` mm of advance per turn.
+// With combine=remove/add on an existing solid this makes real thread geometry; with combine=none it makes a spring / coil.
+json h_helical_sweep(const json& p) {
+  evxBoolType combine = parse_combine(p);
+  DispGuard guard;
+  int first = 0;
+  int list = make_curvelist(p.at("profile"), &first);
+  svxSpiralSweepData d;
+  check_api(cvxPartSpiralSweepInit(&d), "cvxPartSpiralSweepInit");
+  d.pntOnPro.pntType = VX_START_POINT;
+  d.pntOnPro.entPath.Count = 2;
+  d.pntOnPro.entPath.Id[0] = -2;  // path starts at the active root object
+  d.pntOnPro.entPath.Id[1] = list;
+  d.axis = to_vector(p.at("axis_direction"), "axis_direction");
+  d.turns = p.at("turns").get<double>();
+  d.dst = p.at("pitch").get<double>();
+  d.combine = combine;
+  d.leadType = VX_LEAD_NONE;
+  d.capType = VX_END_CAP_BOTH;
+  d.offsetType = VX_OFFSET_NONE;
+  d.taperAng = p.value("taper_angle", 0.0);
+  d.isClockwise = p.value("clockwise", false) ? 1 : 0;
+  d.isFlipDir = p.value("flip", false) ? 1 : 0;
+  int id = 0;
+  check_api(cvxPartSpiralSweep(&d, &id), "cvxPartSpiralSweep");
+  return creation_result(combine, id);
+}
+
+// Thread attribute on a cylindrical face (hole wall or shaft): what drawings and the UI show as a thread callout, without modeled geometry.
+json h_add_thread(const json& p) {
+  int face = p.at("face_id").get<int>();
+  svxPoint at = to_point(p.at("point"), "point");
+  svxThreadData t;
+  check_api(cvxPartThreadAtInit(&t), "cvxPartThreadAtInit");
+  t.Type = VX_THREAD_CUSTOM;
+  t.Diameter = p.at("diameter").get<double>();
+  t.Length = p.at("length").get<double>();
+  t.Pitch = p.at("pitch").get<double>();
+  t.PerUnit = 0;
+  t.EndChamfer = 0;
+  DispGuard guard;
+  check_api(cvxPartThreadAt(face, &at, &t), "cvxPartThreadAt");
+  return {{"face_id", face}, {"diameter", t.Diameter}, {"pitch", t.Pitch}, {"length", t.Length}};
+}
+
 json h_list_features(const json&) {
   int n = 0;
   int* ids = nullptr;
@@ -809,6 +854,8 @@ void register_part_handlers(std::map<std::string, Handler>& m) {
   m["draft_faces"] = h_draft_faces;
   m["sweep"] = h_sweep;
   m["loft"] = h_loft;
+  m["helical_sweep"] = h_helical_sweep;
+  m["add_thread"] = h_add_thread;
   m["list_features"] = h_list_features;
   m["sketch_extrude"] = h_sketch_extrude;
   m["sketch_revolve"] = h_sketch_revolve;

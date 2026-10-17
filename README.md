@@ -79,6 +79,8 @@ clients receive it automatically as the MCP `instructions`, and it is also avail
 | `revolve_profile` | Revolve a profile made of lines and arcs |
 | `sweep` | Sweep a closed profile along a path |
 | `loft` | Loft through two or more closed sections |
+| `helical_sweep` | Sweep a closed profile along a helix: springs, coils and real modeled threads |
+| `add_thread` | Attach a cosmetic thread definition to a cylindrical face |
 
 **Editing features**
 

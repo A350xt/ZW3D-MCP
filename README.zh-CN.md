@@ -79,6 +79,8 @@ AI 智能体 ── MCP over HTTP: POST http://127.0.0.1:47823/mcp ──▶ zw3
 | `revolve_profile` | 旋转由直线、圆弧组成的轮廓 |
 | `sweep` | 让封闭轮廓沿路径扫掠 |
 | `loft` | 通过两个及以上封闭截面放样 |
+| `helical_sweep` | 让封闭轮廓沿螺旋线扫掠：弹簧、盘管和真实建模的螺纹 |
+| `add_thread` | 给圆柱面附加装饰螺纹定义 |
 
 **编辑特征**
 

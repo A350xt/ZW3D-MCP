@@ -25,6 +25,7 @@ const char* const kInstructions = R"GUIDE(Controls a running ZW3D 2025+ (not ZWC
 - Prismatic or turned parts: extrude_polygon / revolve_polygon for a closed planar polygon; extrude_profile / revolve_profile when arcs or circles are needed. Use sketch_extrude / sketch_revolve when you want a real, dimensioned sketch in the feature tree (supports inner loops = holes).
 - Combine solids with boolean (add / subtract / intersect) or the `combine` argument of the profile tools (none = new body, add, remove, intersect). Subtracting a tool that does not overlap the base is refused.
 - Finishing: fillet_edges, chamfer_edges, shell_shape, draft_faces, create_hole (needs a planar face_id from list_faces), pattern_linear, pattern_circular, mirror, sweep, loft.
+- Springs and threads: helical_sweep (tooth/wire profile + axis + turns + pitch; combine=remove/add on a body for real threads); add_thread for a cosmetic thread on a hole/shaft face.
 - Change an existing model without rebuilding: list_features -> get_feature_data -> set_feature_value (field ids come from get_feature_data); part variables via list_variables / add_variable / set_variable; sketch variables via list_sketch_variables / set_sketch_variable.
 - Inspect: list_shapes, list_faces, list_edges (face_id / edge_id for holes, fillets, shells), get_bounding_box, get_mass_props.
 - Assemblies and drawings (basic): new_assembly, insert_component (saved parts only), list_components, new_drawing (of a saved part).
@@ -530,6 +531,34 @@ void build() {
         for (size_t i = 0; i < secs.size(); ++i) out.push_back(val::segments(secs[i], "sections[" + std::to_string(i) + "]"));
         return call("loft", {{"sections", out}, {"combine", combine_of(a)}});
       }, true);
+
+  add("helical_sweep",
+      "Sweep a closed profile along a helix (ZW3D spiral sweep): springs, coils and REAL modeled threads. profile: closed loop of 3D segments (same format as "
+      "extrude_profile), e.g. a triangle / trapezoid thread tooth or a circle for a spring wire, positioned at its radius from the axis. axis_direction: helix axis "
+      "direction (the axis is assumed to pass through the world origin, so build the part around the origin or check the result with get_bounding_box). turns: number "
+      "of turns; pitch: advance along the axis per turn (mm). Threads: make the tooth profile and use combine='remove' on a bolt/hole body (cut thread) or 'add' "
+      "(raised thread); combine='none' gives a free coil. clockwise=true turns the helix clockwise about the axis direction (check handedness in a screenshot), taper_angle for pipe threads, flip reverses the direction. For a thread callout "
+      "without geometry use add_thread.",
+      schema({{"profile", t_segments("Closed profile segments (3D), e.g. the thread tooth.")}, {"axis_direction", t_pt("Helix axis direction.")},
+              {"turns", t_num("Number of turns (> 0).")}, {"pitch", t_num("Advance per turn in mm (> 0).")}, {"clockwise", t_bool()}, {"flip", t_bool()},
+              {"taper_angle", t_num("Degrees, 0 = straight.")}, {"combine", t_combine()}},
+             {"profile", "axis_direction", "turns", "pitch"}),
+      [](const json& a) {
+        return call("helical_sweep", {{"profile", val::segments(req(a, "profile"), "profile")}, {"axis_direction", val::to_json(val::vector(req(a, "axis_direction"), "axis_direction"))},
+                                      {"turns", val::positive(req(a, "turns"), "turns")}, {"pitch", val::positive(req(a, "pitch"), "pitch")},
+                                      {"clockwise", bool_or(a, "clockwise", false)}, {"flip", bool_or(a, "flip", false)},
+                                      {"taper_angle", num_or(a, "taper_angle", 0.0)}, {"combine", combine_of(a)}});
+      }, true);
+
+  add("add_thread",
+      "Attach a thread definition (cosmetic thread, shown in drawings/UI, no modeled geometry) to a cylindrical face such as a hole wall or a shaft. face_id from "
+      "list_faces; point: a point on or near the face at the end where the thread starts; diameter / pitch / length in mm. For real thread geometry use helical_sweep.",
+      schema({{"face_id", t_int()}, {"point", t_pt()}, {"diameter", t_num()}, {"pitch", t_num()}, {"length", t_num()}}, {"face_id", "point", "diameter", "pitch", "length"}),
+      [](const json& a) {
+        return call("add_thread", {{"face_id", val::one_id(req(a, "face_id"), "face_id")}, {"point", val::to_json(val::point(req(a, "point"), "point"))},
+                                   {"diameter", val::positive(req(a, "diameter"), "diameter")}, {"pitch", val::positive(req(a, "pitch"), "pitch")},
+                                   {"length", val::positive(req(a, "length"), "length")}});
+      });
 
   add("list_features",
       "List the features of the active part's history: feature_id, name (e.g. 'Extrude1') and template. Use the ids with pattern_*/mirror feature targets and with "

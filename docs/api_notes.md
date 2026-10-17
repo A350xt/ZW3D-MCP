@@ -194,3 +194,13 @@ The MCP/validation/HTTP layers were exercised offline with a throwaway stub host
 5. **`boolean` subtract of a disjoint tool "succeeds"** (a sphere beside a box: reported OK, box volume unchanged, the sphere consumed). `cvxPartBool` does not report it.
    Now `subtract` / `intersect` first compare the bounding boxes of base and every tool (`BOOLEAN_NO_OVERLAP`, nothing touched), and after a subtract
    the base volume is compared with the volume before (`BOOLEAN_NO_EFFECT`, rolled back) to catch overlapping boxes with non-overlapping shapes. `add` is not checked.
+
+## Helical sweep and threads (added after 0.3.0, NOT yet run in ZW3D)
+
+- `helical_sweep` -> `cvxPartSpiralSweepInit` + `cvxPartSpiralSweep(svxSpiralSweepData)`. The profile is a curve list; `pntOnPro` is
+  `{pntType = VX_START_POINT, entPath = {Count 2, Id {-2, <curve list id>}}}`; `axis` is only an `svxVector` (direction), so the axis position
+  is unknown from the header (assumed through the world origin) - verify live; `turns`, `dst` (advance per turn), `isClockwise`, `isFlipDir`, `taperAng`.
+  Thread geometry = tooth profile + combine remove/add.
+- `add_thread` -> `cvxPartThreadAtInit` + `cvxPartThreadAt(idFace, &pnt, svxThreadData)` (cosmetic thread attribute, type `VX_THREAD_CUSTOM`).
+  The header notes `cvxPartFlagExtThread` does the same with more parameters (not wrapped yet).
+- ZW3D's own hole thread (`threadDia/threadPitch` in hole feature data, `VX_THREAD_HOLE`) is not exposed by `create_hole` yet.

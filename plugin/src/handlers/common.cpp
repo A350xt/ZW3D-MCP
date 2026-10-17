@@ -100,7 +100,7 @@ bool is_modeling_method(const std::string& m) {
   static const char* names[] = {"create_box", "create_cylinder", "create_sphere", "extrude_polygon", "revolve_polygon",
                                 "extrude_profile", "revolve_profile", "sketch_extrude", "sketch_revolve", "boolean",
                                 "fillet_edges", "chamfer_edges", "shell_shape", "create_hole", "pattern_shape", "pattern_feature",
-                                "mirror_shape", "mirror_feature", "draft_faces", "sweep", "loft", "set_variable",
+                                "mirror_shape", "mirror_feature", "draft_faces", "sweep", "loft", "helical_sweep", "add_thread", "set_variable",
                                 "add_variable", "set_sketch_variable", "set_feature_value"};
   for (const char* n : names) if (m == n) return true;
   return false;
