@@ -795,21 +795,50 @@ json h_loft(const json& p) {
 
 // Helical (spiral) sweep: a closed profile is swept along a helix about `axis`, `turns` turns with `pitch` mm of advance per turn.
 // With combine=remove/add on an existing solid this makes real thread geometry; with combine=none it makes a spring / coil.
+//
+// svxSpiralSweepData.axis is only a direction: the header gives no axis position. The sweep is therefore always built about the line through the
+// world origin, and the requested axis_point is realised by shifting the profile there and moving the finished solid back. For whole turns the
+// swept solid is symmetric about its axis, which is checked: if ZW3D used a different axis the call fails (HELIX_AXIS_MISMATCH) instead of
+// returning a coil in the wrong place. A boolean (combine != none) is done afterwards against base_shape_id.
+void shift_segments(json& segs, const svxPoint& d) {
+  for (auto& s : segs)
+    for (const char* k : {"start", "end", "through", "center"})
+      if (s.contains(k) && s[k].is_array() && s[k].size() == 3) {
+        s[k][0] = s[k][0].get<double>() - d.x;
+        s[k][1] = s[k][1].get<double>() - d.y;
+        s[k][2] = s[k][2].get<double>() - d.z;
+      }
+}
+
 json h_helical_sweep(const json& p) {
-  evxBoolType combine = parse_combine(p);
+  std::string comb = p.value("combine", std::string("none"));
+  parse_combine(p);  // validates the value
+  int base = p.contains("base_shape_id") && !p["base_shape_id"].is_null() ? p["base_shape_id"].get<int>() : 0;
+  if (comb != "none") {
+    if (base <= 0) invalid_input("combine=" + comb + " 需要 base_shape_id（被切/被加的实体）", "先 list_shapes 取得实体 id；或用 combine=none 得到独立的螺旋体。");
+    require_shape(base);
+  }
+  svxPoint ap{0, 0, 0};
+  if (p.contains("axis_point") && !p["axis_point"].is_null()) ap = to_point(p["axis_point"], "axis_point");
+  svxVector axis = to_vector(p.at("axis_direction"), "axis_direction");
+  double al = std::sqrt(axis.x * axis.x + axis.y * axis.y + axis.z * axis.z);
+  if (al < 1e-12) invalid_input("axis_direction 不能为零向量");
   DispGuard guard;
+  std::vector<int> before = inq_shape_ids();
+  json prof = p.at("profile");
+  shift_segments(prof, ap);
   int first = 0;
-  int list = make_curvelist(p.at("profile"), &first);
+  int list = make_curvelist(prof, &first);
   svxSpiralSweepData d;
   check_api(cvxPartSpiralSweepInit(&d), "cvxPartSpiralSweepInit");
   d.pntOnPro.pntType = VX_START_POINT;
   d.pntOnPro.entPath.Count = 2;
   d.pntOnPro.entPath.Id[0] = -2;  // path starts at the active root object
   d.pntOnPro.entPath.Id[1] = list;
-  d.axis = to_vector(p.at("axis_direction"), "axis_direction");
+  d.axis = axis;
   d.turns = p.at("turns").get<double>();
   d.dst = p.at("pitch").get<double>();
-  d.combine = combine;
+  d.combine = VX_BOOL_NONE;
   d.leadType = VX_LEAD_NONE;
   d.capType = VX_END_CAP_BOTH;
   d.offsetType = VX_OFFSET_NONE;
@@ -818,7 +847,47 @@ json h_helical_sweep(const json& p) {
   d.isFlipDir = p.value("flip", false) ? 1 : 0;
   int id = 0;
   check_api(cvxPartSpiralSweep(&d, &id), "cvxPartSpiralSweep");
-  return creation_result(combine, id);
+  std::vector<int> now = inq_shape_ids();
+  if (id <= 0 || std::find(now.begin(), now.end(), id) == now.end()) {
+    id = 0;
+    for (int s : now)
+      if (std::find(before.begin(), before.end(), s) == before.end()) id = s;
+  }
+  if (id <= 0) throw ApiError("HELIX_NO_RESULT", "螺旋扫掠没有产生实体", "确认 profile 是封闭轮廓、位于轴的一侧且不与轴相交；turns 和 pitch 为正。");
+
+  double turns = d.turns;
+  if (std::fabs(turns - std::round(turns)) < 1e-9) {
+    svxBndBox bb{};
+    check_api(cvxPartInqShapeBox(id, nullptr, &bb), "cvxPartInqShapeBox");
+    double c[3] = {(bb.X.min + bb.X.max) / 2, (bb.Y.min + bb.Y.max) / 2, (bb.Z.min + bb.Z.max) / 2};
+    double u[3] = {axis.x / al, axis.y / al, axis.z / al};
+    double along = c[0] * u[0] + c[1] * u[1] + c[2] * u[2];
+    double off[3] = {c[0] - along * u[0], c[1] - along * u[1], c[2] - along * u[2]};
+    double offl = std::sqrt(off[0] * off[0] + off[1] * off[1] + off[2] * off[2]);
+    double diag = std::sqrt(std::pow(bb.X.max - bb.X.min, 2) + std::pow(bb.Y.max - bb.Y.min, 2) + std::pow(bb.Z.max - bb.Z.min, 2));
+    if (offl > 0.05 * diag + 1e-6)
+      throw ApiError("HELIX_AXIS_MISMATCH", "螺旋体没有围绕预期的轴生成（偏离 " + std::to_string(offl) + " mm）",
+                     "中望3D 的螺旋扫掠接口只有轴方向、没有轴位置，实际使用的轴与“过原点”的假设不符。已回滚；把此信息反馈给开发者。");
+  }
+
+  if (ap.x != 0 || ap.y != 0 || ap.z != 0) {
+    svxMatrix m{};
+    m.identity = 0;
+    m.xx = m.yy = m.zz = 1.0;
+    m.xt = ap.x;
+    m.yt = ap.y;
+    m.zt = ap.z;
+    check_api(cvxPartMoveTransformList(1, &id, &m), "cvxPartMoveTransformList");
+  }
+  std::vector<int> after = inq_shape_ids();
+  int tool = 0;
+  for (int s : after)
+    if (std::find(before.begin(), before.end(), s) == before.end()) tool = s;
+  if (tool <= 0) tool = id;
+
+  if (comb == "none") return creation_result(VX_BOOL_NONE, tool);
+  json b = {{"operation", comb == "add" ? "add" : comb == "remove" ? "subtract" : "intersect"}, {"base_id", base}, {"tool_ids", json::array({tool})}, {"keep_tools", false}};
+  return h_boolean(b);
 }
 
 // Thread attribute on a cylindrical face (hole wall or shaft): what drawings and the UI show as a thread callout, without modeled geometry.

@@ -558,20 +558,27 @@ void build() {
 
   add("helical_sweep",
       "Sweep a closed profile along a helix (ZW3D spiral sweep): springs, coils and REAL modeled threads. profile: closed loop of 3D segments (same format as "
-      "extrude_profile), e.g. a triangle / trapezoid thread tooth or a circle for a spring wire, positioned at its radius from the axis. axis_direction: helix axis "
-      "direction (the axis is assumed to pass through the world origin, so build the part around the origin or check the result with get_bounding_box). turns: number "
-      "of turns; pitch: advance along the axis per turn (mm). Threads: make the tooth profile and use combine='remove' on a bolt/hole body (cut thread) or 'add' "
-      "(raised thread); combine='none' gives a free coil. clockwise=true turns the helix clockwise about the axis direction (check handedness in a screenshot), taper_angle for pipe threads, flip reverses the direction. For a thread callout "
-      "without geometry use add_thread.",
-      schema({{"profile", t_segments("Closed profile segments (3D), e.g. the thread tooth.")}, {"axis_direction", t_pt("Helix axis direction.")},
+      "extrude_profile), e.g. a triangle / trapezoid thread tooth or a circle for a spring wire, drawn where the coil should be in the part (at its radius from the axis). "
+      "axis_point + axis_direction: the helix axis in part coordinates (axis_point defaults to the origin). turns: number of turns; pitch: advance along the axis per turn (mm). "
+      "Threads: make the tooth profile and use combine='remove' with base_shape_id = the bolt/nut body (cut thread) or 'add' (raised thread); combine='none' gives a free "
+      "coil. clockwise=true turns the helix clockwise about the axis direction (check handedness in a screenshot), taper_angle for pipe threads, flip reverses the direction. "
+      "ZW3D's interface has no axis position, so the sweep is built about the origin and moved to axis_point; for whole turns the result is checked and the call fails with "
+      "HELIX_AXIS_MISMATCH if the coil did not come out around the expected axis. For a thread callout without geometry use add_thread.",
+      schema({{"profile", t_segments("Closed profile segments (3D), e.g. the thread tooth.")}, {"axis_point", t_pt("Point on the helix axis (default origin).")},
+              {"axis_direction", t_pt("Helix axis direction.")},
               {"turns", t_num("Number of turns (> 0).")}, {"pitch", t_num("Advance per turn in mm (> 0).")}, {"clockwise", t_bool()}, {"flip", t_bool()},
-              {"taper_angle", t_num("Degrees, 0 = straight.")}, {"combine", t_combine()}},
+              {"taper_angle", t_num("Degrees, 0 = straight.")}, {"combine", t_combine()}, {"base_shape_id", t_int("Solid to add to / cut / intersect when combine is not 'none'.")}},
              {"profile", "axis_direction", "turns", "pitch"}),
       [](const json& a) {
-        return call("helical_sweep", {{"profile", val::segments(req(a, "profile"), "profile")}, {"axis_direction", val::to_json(val::vector(req(a, "axis_direction"), "axis_direction"))},
-                                      {"turns", val::positive(req(a, "turns"), "turns")}, {"pitch", val::positive(req(a, "pitch"), "pitch")},
-                                      {"clockwise", bool_or(a, "clockwise", false)}, {"flip", bool_or(a, "flip", false)},
-                                      {"taper_angle", num_or(a, "taper_angle", 0.0)}, {"combine", combine_of(a)}});
+        std::string comb = combine_of(a);
+        json p = {{"profile", val::segments(req(a, "profile"), "profile")}, {"axis_direction", val::to_json(val::vector(req(a, "axis_direction"), "axis_direction"))},
+                  {"turns", val::positive(req(a, "turns"), "turns")}, {"pitch", val::positive(req(a, "pitch"), "pitch")},
+                  {"clockwise", bool_or(a, "clockwise", false)}, {"flip", bool_or(a, "flip", false)},
+                  {"taper_angle", num_or(a, "taper_angle", 0.0)}, {"combine", comb}};
+        if (has(a, "axis_point")) p["axis_point"] = val::to_json(val::point(arg(a, "axis_point"), "axis_point"));
+        if (has(a, "base_shape_id")) p["base_shape_id"] = val::one_id(arg(a, "base_shape_id"), "base_shape_id");
+        if (comb != "none" && !has(a, "base_shape_id")) bad("combine='" + comb + "' needs base_shape_id", "list_shapes gives the id; or use combine='none'.");
+        return call("helical_sweep", p);
       }, true);
 
   add("add_thread",

@@ -224,3 +224,10 @@ The MCP/validation/HTTP layers were exercised offline with a throwaway stub host
   `cvxCompInqOpenShapes` + `cvxPartInqShapeFaces` and may fail - verify live. `lock` uses `{-2, comp}` paths.
 - Drawings: `list_drawing_views` -> `cvxDwgInqList(rootId)` (root id from `cvxEntByName`, unverified) + `cvxDwgInqViews`; `auto_dimension` -> `cvxDwgAutoDimAdd`
   (`checkOrg = 0`, both directions baseline); `add_bom` -> `cvxDwgTableBom` (defaults only) + `cvxDwgTableInsert`.
+
+## helical_sweep: axis position
+
+`svxSpiralSweepData.axis` is a bare `svxVector` and the header documents no axis position (the new `Zw*` API has no helical sweep either; only a wireframe
+`ZwFeatureSpiralHelixCreate`). The tool therefore builds the sweep about the line through the world origin (profile shifted by `-axis_point`), moves the
+result by `+axis_point` with `cvxPartMoveTransformList`, and for whole turns verifies that the solid's bbox centre lies on the axis (`HELIX_AXIS_MISMATCH` otherwise).
+`combine != none` is applied afterwards with the normal `boolean` logic against `base_shape_id`. Still to confirm live: that ZW3D really uses the origin axis.
