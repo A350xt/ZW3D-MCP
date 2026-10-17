@@ -55,7 +55,10 @@ AI 智能体 ── MCP over HTTP: POST http://127.0.0.1:47823/mcp ──▶ zw3
 | `new_part` | 新建零件文件（`.Z3PRT`）并激活 |
 | `save_part` | 保存；给出路径则另存为 |
 | `export_step` | 把当前文件导出为 STEP |
-| `screenshot` | 截取当前视图并作为图片返回 |
+| `open_file` | 打开已有的中望3D 文件 |
+| `import_file` | 导入 STEP、Parasolid、SAT、IGES 或 STL |
+| `screenshot` | 截取当前视图并作为图片返回（可指定标准视角和显示模式） |
+| `set_view` | 切换标准视角和显示模式 |
 | `run_command` | 发送原始中望3D 命令（默认关闭，需环境变量开启） |
 | `undo` / `redo` | 按整次工具调用撤销 / 重做 |
 
@@ -90,11 +93,23 @@ AI 智能体 ── MCP over HTTP: POST http://127.0.0.1:47823/mcp ──▶ zw3
 | `fillet_edges` | 等半径圆角 |
 | `chamfer_edges` | 倒角 |
 | `shell_shape` | 抽壳，可留出开口面 |
-| `create_hole` | 在平面上打简单孔、沉头孔、锥形沉头孔 |
+| `create_hole` | 在平面上打简单孔、沉头孔、锥形沉头孔、螺纹孔 |
 | `draft_faces` | 对面做拔模 |
 | `pattern_linear` | 实体或特征的线性 / 网格阵列 |
 | `pattern_circular` | 实体或特征的圆周阵列 |
 | `mirror` | 沿平面镜像实体或特征 |
+| `move_shapes` | 移动和/或旋转实体 |
+| `scale_shapes` | 等比或分轴缩放实体 |
+| `create_rib` | 用开放轮廓创建加强筋 |
+| `thicken_faces` | 把面加厚成实体 |
+| `trim_shape` | 用平面或切割面切掉实体的一侧 |
+| `split_shape` | 把一个实体分割成多个实体 |
+| `extend_face` | 向外延伸面 |
+| `set_color` | 给面或实体上色 |
+| `delete_shapes` | 删除实体 |
+| `delete_features` | 删除历史特征 |
+| `suppress_features` | 压缩或解除压缩特征 |
+| `rename_feature` | 重命名历史特征 |
 
 **查询**
 
@@ -105,6 +120,7 @@ AI 智能体 ── MCP over HTTP: POST http://127.0.0.1:47823/mcp ──▶ zw3
 | `list_edges` | 列出实体的边及其几何信息 |
 | `list_features` | 列出零件的历史特征 |
 | `get_bounding_box` | 获取实体包围盒 |
+| `measure_distance` | 两个实体、面或边之间的最小距离（0 表示接触） |
 | `get_mass_props` | 获取体积、表面积、质量、重心 |
 
 **参数化修改**
@@ -126,7 +142,12 @@ AI 智能体 ── MCP over HTTP: POST http://127.0.0.1:47823/mcp ──▶ zw3
 | `new_assembly` | 新建装配文件 |
 | `insert_component` | 把已保存的零件插入当前装配 |
 | `list_components` | 列出当前装配的组件 |
+| `list_component_faces` | 以拾取路径形式列出组件的面，供约束使用 |
+| `add_constraint` | 添加装配约束（锁定、重合、同心、距离、平行、垂直、相切、角度） |
 | `new_drawing` | 为已保存的零件新建带标准视图的工程图 |
+| `list_drawing_views` | 列出当前文件的工程图和视图 |
+| `auto_dimension` | 给工程图视图添加自动尺寸标注 |
+| `add_bom` | 插入明细表 |
 
 ## 从源码构建（Windows，VS 2022）
 

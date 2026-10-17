@@ -467,6 +467,90 @@ json h_list_components(const json&) {
   return {{"count", v.size()}, {"component_ids", v}};
 }
 
+// ---- assembly constraints ---------------------------------------------------------------------------------------
+// Entities inside components are addressed by pick paths (arrays of ids starting with -2 = "from the active root"). They cannot be guessed:
+// list_component_faces returns them, add_constraint takes them back unchanged.
+json path_to_json(const svxEntPath& p) {
+  json a = json::array();
+  for (int i = 0; i < p.Count; ++i) a.push_back(p.Id[i]);
+  return a;
+}
+
+svxEntPath path_from_json(const json& v, const char* name) {
+  if (!v.is_array() || v.size() < 2 || v.size() > V_PP_LEN) invalid_input(std::string(name) + " 必须是 list_component_faces 返回的路径数组");
+  svxEntPath p{};
+  p.Count = (int)v.size();
+  for (size_t i = 0; i < v.size(); ++i) {
+    if (!v[i].is_number_integer()) invalid_input(std::string(name) + " 必须是整数数组");
+    p.Id[i] = v[i].get<int>();
+  }
+  return p;
+}
+
+json h_list_component_faces(const json& p) {
+  int comp = p.at("component_id").get<int>();
+  svxEntPath cp{};
+  cp.Count = 2;
+  cp.Id[0] = -2;
+  cp.Id[1] = comp;
+  int n = 0;
+  svxEntPath* shapes = nullptr;
+  check_api(cvxCompInqOpenShapes(&cp, 1, &n, &shapes), "cvxCompInqOpenShapes");
+  json out = json::array();
+  std::string note;
+  for (int i = 0; i < n; ++i) {
+    int nf = 0;
+    int* faces = nullptr;
+    int shape = shapes[i].Id[shapes[i].Count - 1];
+    int r = cvxPartInqShapeFaces(shape, &nf, &faces);
+    json fl = json::array();
+    if (r == 0) {
+      for (int k = 0; k < nf; ++k) {
+        svxEntPath fp = shapes[i];
+        if (fp.Count < V_PP_LEN) fp.Id[fp.Count++] = faces[k];
+        fl.push_back(path_to_json(fp));
+      }
+    } else {
+      note = "无法在该组件的上下文中读取面 (api_code=" + std::to_string(r) + ")；请在零件文件中用 list_faces 取得面信息，约束时使用组件级 lock。";
+    }
+    if (faces) cvxMemFree(reinterpret_cast<void**>(&faces));
+    out.push_back({{"shape_path", path_to_json(shapes[i])}, {"face_paths", fl}});
+  }
+  if (shapes) cvxMemFree(reinterpret_cast<void**>(&shapes));
+  json res = {{"component_id", comp}, {"shapes", out}};
+  if (!note.empty()) res["note"] = note;
+  return res;
+}
+
+json h_add_constraint(const json& p) {
+  std::string type = p.at("type").get<std::string>();
+  svxConsData d;
+  std::memset(&d, 0, sizeof(d));
+  d.value = p.value("value", 0.0);
+  d.sameDir = p.value("same_direction", false) ? 1 : 0;
+  d.lockRotation = 0;
+  int id = 0;
+  if (type == "lock") {
+    svxEntPath a{}, b{};
+    a.Count = b.Count = 2;
+    a.Id[0] = b.Id[0] = -2;
+    a.Id[1] = p.at("component1").get<int>();
+    b.Id[1] = p.at("component2").get<int>();
+    check_api(cvxCompAddLockCons(&a, &b, &d, &id), "cvxCompAddLockCons");
+    return {{"constraint_id", id}, {"type", type}};
+  }
+  svxEntPath e1 = path_from_json(p.at("entity1"), "entity1"), e2 = path_from_json(p.at("entity2"), "entity2");
+  if (type == "coincident") check_api(cvxCompAddCoincidentCons(&e1, nullptr, &e2, nullptr, &d, &id), "cvxCompAddCoincidentCons");
+  else if (type == "tangent") check_api(cvxCompAddTangentCons(&e1, &e2, &d, &id), "cvxCompAddTangentCons");
+  else if (type == "parallel") check_api(cvxCompAddParallelCons(&e1, &e2, &d, &id), "cvxCompAddParallelCons");
+  else if (type == "perpendicular") check_api(cvxCompAddPerpendicularCons(&e1, &e2, &d, &id), "cvxCompAddPerpendicularCons");
+  else if (type == "angular") check_api(cvxCompAddAngularCons(&e1, &e2, &d, &id), "cvxCompAddAngularCons");
+  else if (type == "concentric") check_api(cvxCompAddConcentricCons(&e1, nullptr, &e2, nullptr, &d, &id), "cvxCompAddConcentricCons");
+  else if (type == "distance") check_api(cvxCompAddDistanceCons(&e1, nullptr, &e2, nullptr, &d, &id), "cvxCompAddDistanceCons");
+  else invalid_input("type 取值无效: " + type, "可选: coincident, concentric, distance, parallel, perpendicular, tangent, angular, lock");
+  return {{"constraint_id", id}, {"type", type}};
+}
+
 // ---- drawings ---------------------------------------------------------------------------------------------------
 json h_new_drawing(const json& p) {
   char file[512];
@@ -483,6 +567,75 @@ json h_new_drawing(const json& p) {
   return {{"file", current_file_utf8()}, {"root", current_root_utf8()}};
 }
 
+// All drawings of the active file with their views.
+json h_list_drawing_views(const json&) {
+  std::string root = utf8_to_ansi(current_root_utf8());
+  int root_id = 0;
+  cvxEntByName(root.c_str(), &root_id);  // best effort: cvxDwgInqList takes the id of the root object
+  int n = 0;
+  int* drawings = nullptr;
+  check_api(cvxDwgInqList(root_id, &n, &drawings), "cvxDwgInqList");
+  json out = json::array();
+  for (int i = 0; i < n; ++i) {
+    char name[256] = {0};
+    cvxDwgInqName(drawings[i], name, sizeof(name));
+    int vn = 0;
+    int* views = nullptr;
+    json vl = json::array();
+    if (cvxDwgInqViews(drawings[i], VX_VIEW_ALL, &vn, &views) == 0) {
+      for (int k = 0; k < vn; ++k) {
+        evxViewTypeEx vt{};
+        cvxDwgInqViewTypeEx(views[k], &vt);
+        vl.push_back({{"view_id", views[k]}, {"view_type", (int)vt}});
+      }
+    }
+    if (views) cvxMemFree(reinterpret_cast<void**>(&views));
+    out.push_back({{"drawing_id", drawings[i]}, {"name", ansi_to_utf8(name)}, {"views", vl}});
+  }
+  if (drawings) cvxMemFree(reinterpret_cast<void**>(&drawings));
+  return {{"drawings", out}, {"note", "view_type: 1 top, 2 front, 3 right, 4 back, 5 bottom, 6 left, 7 isometric (evxViewTypeEx)"}};
+}
+
+json h_auto_dimension(const json& p) {
+  int view = p.at("view_id").get<int>();
+  svxDimAuto d;
+  check_api(cvxDwgAutoDimAddInit(&d), "cvxDwgAutoDimAddInit");
+  d.idView = view;
+  d.entType = DIM_AUTO_ENT_ALL;
+  d.incAuto = VX_AUTOINC_VALID;
+  d.checkOrg = 0;  // no explicit origin reference point
+  d.horDim.enable = 1;
+  d.horDim.type = DIM_AUTO_BASELINE;
+  d.horDim.viewType = DIM_VIEW_BELOW_RIGHT;
+  d.verDim.enable = 1;
+  d.verDim.type = DIM_AUTO_BASELINE;
+  d.verDim.viewType = DIM_VIEW_BELOW_RIGHT;
+  int id = 0;
+  check_api(cvxDwgAutoDimAdd(&d, &id), "cvxDwgAutoDimAdd");
+  int dn = 0;
+  int* dims = nullptr;
+  int count = cvxDwgInqDimByView(view, &dn, &dims) == 0 ? dn : -1;
+  if (dims) cvxMemFree(reinterpret_cast<void**>(&dims));
+  return {{"view_id", view}, {"dimension_id", id}, {"dimensions_in_view", count}};
+}
+
+json h_add_bom(const json& p) {
+  int view = p.at("view_id").get<int>();
+  svxPoint2 pos{p.value("x", 10.0), p.value("y", 200.0)};
+  svxDwgBom b;
+  check_api(cvxDwgTableBomInit(&b), "cvxDwgTableBomInit");
+  b.idView = view;
+  int tbl = 0;
+  check_api(cvxDwgTableBom(&b, &tbl), "cvxDwgTableBom");
+  svxDwgTblInsert ins;
+  std::memset(&ins, 0, sizeof(ins));
+  ins.idTable = tbl;
+  ins.crtpnt = pos;
+  ins.origin = VX_TOP_LEFT;
+  check_api(cvxDwgTableInsert(&ins), "cvxDwgTableInsert");
+  return {{"table_id", tbl}, {"x", pos.x}, {"y", pos.y}};
+}
+
 }  // namespace
 
 void register_misc_handlers(std::map<std::string, Handler>& m) {
@@ -497,5 +650,10 @@ void register_misc_handlers(std::map<std::string, Handler>& m) {
   m["new_assembly"] = h_new_assembly;
   m["insert_component"] = h_insert_component;
   m["list_components"] = h_list_components;
+  m["list_component_faces"] = h_list_component_faces;
+  m["add_constraint"] = h_add_constraint;
   m["new_drawing"] = h_new_drawing;
+  m["list_drawing_views"] = h_list_drawing_views;
+  m["auto_dimension"] = h_auto_dimension;
+  m["add_bom"] = h_add_bom;
 }

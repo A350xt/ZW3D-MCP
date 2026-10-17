@@ -204,3 +204,23 @@ The MCP/validation/HTTP layers were exercised offline with a throwaway stub host
 - `add_thread` -> `cvxPartThreadAtInit` + `cvxPartThreadAt(idFace, &pnt, svxThreadData)` (cosmetic thread attribute, type `VX_THREAD_CUSTOM`).
   The header notes `cvxPartFlagExtThread` does the same with more parameters (not wrapped yet).
 - ZW3D's own hole thread (`threadDia/threadPitch` in hole feature data, `VX_THREAD_HOLE`) is not exposed by `create_hole` yet.
+
+## Second batch of tools (NOT yet run in ZW3D; all written from the 2025 headers)
+
+- `delete_shapes` -> `cvxPartErase`; `delete_features` -> `cvxPartHistDel`; `suppress_features` -> `cvxPartFtrSuppress(count, ids, 1|0)`;
+  `rename_feature` -> `cvxPartHistRename(idOp, vxName[32], NULL)`. All three renumber ids (regeneration).
+- `set_view` / `screenshot(view, display_mode)` -> `cvxViewStd(evxViewStd, 100)` and `cvxDispModeSet`.
+- `measure_distance` -> `cvxEntGetDistance(id1, id2, &p1, &p2, &dist)` (solids/faces/edges of the active part).
+- `open_file` -> `cvxFileOpen`; `import_file` -> `cvxFileImportInit(type)` + `cvxFileImport` (`importTo` 2 = new file, 0 = current object).
+- `move_shapes` -> `cvxPartMoveTransformList` with a hand-built `svxMatrix` (rotation about an axis point via Rodrigues; field `<axis><component>` as in sketches);
+  `scale_shapes` -> `cvxPartScale2`; `create_rib` -> `cvxPartRib` (open curve list, profile = first curve id); `thicken_faces` -> `cvxPartThicken(type 1)`;
+  `trim_shape` -> `cvxPartTrim`; `split_shape` -> `cvxPartDivide`; `extend_face` -> `cvxPartExtendFace`. Each checks the geometry fingerprint and
+  reports `*_NO_EFFECT` / `SPLIT_NO_RESULT` when ZW3D reports success without a change (rolled back).
+- `create_hole(thread)` -> `cvxPartHoleInit(VX_THREAD_HOLE, ...)` with `ThreadType = VX_THREAD_CUSTOM`, `ThreadDiameter`, `ThreadPitch`, `ThreadLength`.
+  Standard sizes (Thread.xml `SizeValue`) are not wrapped.
+- `set_color` -> `cvxEntRgbSet` (true colour only on faces).
+- Assemblies: `add_constraint` -> `cvxCompAdd{Coincident,Concentric,Distance,Parallel,Perpendicular,Tangent,Angular,Lock}Cons`. The pick-path layout of faces inside
+  components is NOT documented clearly (example in `cvxEntPathToRoot`: `{-2, PART, COMP, PART, COMP, PART, FACE}`); `list_component_faces` builds paths from
+  `cvxCompInqOpenShapes` + `cvxPartInqShapeFaces` and may fail - verify live. `lock` uses `{-2, comp}` paths.
+- Drawings: `list_drawing_views` -> `cvxDwgInqList(rootId)` (root id from `cvxEntByName`, unverified) + `cvxDwgInqViews`; `auto_dimension` -> `cvxDwgAutoDimAdd`
+  (`checkOrg = 0`, both directions baseline); `add_bom` -> `cvxDwgTableBom` (defaults only) + `cvxDwgTableInsert`.

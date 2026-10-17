@@ -25,7 +25,10 @@ const char* const kInstructions = R"GUIDE(Controls a running ZW3D 2025+ (not ZWC
 - Prismatic or turned parts: extrude_polygon / revolve_polygon for a closed planar polygon; extrude_profile / revolve_profile when arcs or circles are needed. Use sketch_extrude / sketch_revolve when you want a real, dimensioned sketch in the feature tree (supports inner loops = holes).
 - Combine solids with boolean (add / subtract / intersect) or the `combine` argument of the profile tools (none = new body, add, remove, intersect). Subtracting a tool that does not overlap the base is refused.
 - Finishing: fillet_edges, chamfer_edges, shell_shape, draft_faces, create_hole (needs a planar face_id from list_faces), pattern_linear, pattern_circular, mirror, sweep, loft.
-- Springs and threads: helical_sweep (tooth/wire profile + axis + turns + pitch; combine=remove/add on a body for real threads); add_thread for a cosmetic thread on a hole/shaft face.
+- Reshaping: move_shapes (translate / rotate), scale_shapes, create_rib, thicken_faces, trim_shape and split_shape (plane or cutter faces), extend_face. Cleanup: delete_shapes, delete_features, suppress_features, rename_feature. Look: set_color (face ids), screenshot with view / display_mode, set_view. Measure: measure_distance (0 = touching / interfering).
+- Existing files: open_file for .Z3PRT/.Z3/.Z3ASM, import_file for STEP / Parasolid / SAT / IGES / STL, then list_shapes and modify.
+- Assemblies: new_assembly, insert_component, list_components, add_constraint (lock needs only component ids; face constraints use pick paths from list_component_faces, experimental). Drawings: new_drawing, list_drawing_views, auto_dimension, add_bom (experimental).
+- Springs and threads: create_hole with a `thread` object for tapped holes; helical_sweep (tooth/wire profile + axis + turns + pitch; combine=remove/add on a body for real threads); add_thread for a cosmetic thread on a hole/shaft face.
 - Change an existing model without rebuilding: list_features -> get_feature_data -> set_feature_value (field ids come from get_feature_data); part variables via list_variables / add_variable / set_variable; sketch variables via list_sketch_variables / set_sketch_variable.
 - Inspect: list_shapes, list_faces, list_edges (face_id / edge_id for holes, fillets, shells), get_bounding_box, get_mass_props.
 - Assemblies and drawings (basic): new_assembly, insert_component (saved parts only), list_components, new_drawing (of a saved part).
@@ -797,9 +800,55 @@ void build() {
 
   add("list_components", "List the component ids in the active assembly.", schema({}), [](const json&) { return call("list_components"); });
 
+  add("list_component_faces",
+      "List the faces of an assembly component as pick paths (arrays of ids). Pass these paths unchanged as entity1 / entity2 of add_constraint. component_id from "
+      "list_components. EXPERIMENTAL: if faces cannot be read the result carries a note; use add_constraint type 'lock' (needs only component ids) instead.",
+      schema({{"component_id", t_int()}}, {"component_id"}),
+      [](const json& a) { return call("list_component_faces", {{"component_id", val::one_id(req(a, "component_id"), "component_id")}}); });
+
+  add("add_constraint",
+      "Add an assembly constraint. type: lock (fix component2 relative to component1; give component1 / component2 ids), or coincident, concentric, distance, parallel, "
+      "perpendicular, tangent, angular between two faces (entity1 / entity2 = pick paths from list_component_faces; value = offset distance in mm for 'distance' or the angle "
+      "in degrees for 'angular'; same_direction flips the mating side). EXPERIMENTAL: face constraints are not yet verified in ZW3D.",
+      schema({{"type", t_enum({"lock", "coincident", "concentric", "distance", "parallel", "perpendicular", "tangent", "angular"})},
+              {"component1", t_int()}, {"component2", t_int()}, {"entity1", t_arr(t_int(), "Pick path from list_component_faces.")}, {"entity2", t_arr(t_int(), "Pick path from list_component_faces.")},
+              {"value", t_num()}, {"same_direction", t_bool()}},
+             {"type"}),
+      [](const json& a) {
+        std::string type = enum_of(a, "type", {"lock", "coincident", "concentric", "distance", "parallel", "perpendicular", "tangent", "angular"});
+        json p = {{"type", type}, {"value", num_or(a, "value", 0.0)}, {"same_direction", bool_or(a, "same_direction", false)}};
+        if (type == "lock") {
+          p["component1"] = val::one_id(req(a, "component1"), "component1");
+          p["component2"] = val::one_id(req(a, "component2"), "component2");
+        } else {
+          for (const char* k : {"entity1", "entity2"}) {
+            const json& e = req(a, k);
+            if (!e.is_array() || e.size() < 2 || e.size() > 400) bad(std::string(k) + " must be a pick path returned by list_component_faces");
+            for (const auto& v : e)
+              if (!v.is_number_integer()) bad(std::string(k) + " must contain integers only");
+            p[k] = e;
+          }
+        }
+        return call("add_constraint", p);
+      });
+
+  add("list_drawing_views",
+      "List the drawings of the active file with their view ids and view types. Use the view_id with auto_dimension and add_bom.",
+      schema({}), [](const json&) { return call("list_drawing_views"); });
+
+  add("auto_dimension",
+      "Add automatic dimensions to a drawing view (view_id from list_drawing_views): horizontal and vertical baseline dimensions for the view's geometry. EXPERIMENTAL.",
+      schema({{"view_id", t_int()}}, {"view_id"}),
+      [](const json& a) { return call("auto_dimension", {{"view_id", val::one_id(req(a, "view_id"), "view_id")}}); });
+
+  add("add_bom",
+      "Insert a bill-of-materials table for an assembly drawing view (view_id from list_drawing_views) at sheet position x, y (mm; default top-left area). EXPERIMENTAL.",
+      schema({{"view_id", t_int()}, {"x", t_num()}, {"y", t_num()}}, {"view_id"}),
+      [](const json& a) { return call("add_bom", {{"view_id", val::one_id(req(a, "view_id"), "view_id")}, {"x", num_or(a, "x", 10.0)}, {"y", num_or(a, "y", 200.0)}}); });
+
   add("new_drawing",
-      "Create a new drawing (.Z3DRW) with the standard multi-view layout of a saved part or assembly (give its full path; save_part first). No dimensions or annotations "
-      "are added yet; save_part (with a path) stores the drawing.",
+      "Create a new drawing (.Z3DRW) with the standard multi-view layout of a saved part or assembly (give its full path; save_part first). Dimensions: auto_dimension; "
+      "parts list: add_bom; save_part (with a path) stores the drawing.",
       schema({{"name", t_str()}, {"part_file", t_str()}}, {"name", "part_file"}), [](const json& a) {
         std::string n = trim(str_req(a, "name")), f = trim(str_req(a, "part_file"));
         if (n.empty() || f.empty()) bad("name and part_file must not be empty", "part_file must be the full path of a saved part/assembly.");

@@ -55,7 +55,10 @@ clients receive it automatically as the MCP `instructions`, and it is also avail
 | `new_part` | Create a new part file (`.Z3PRT`) and make it active |
 | `save_part` | Save, or Save As when a path is given |
 | `export_step` | Export the active file as STEP |
-| `screenshot` | Capture the current view as an image |
+| `open_file` | Open an existing ZW3D file |
+| `import_file` | Import STEP, Parasolid, SAT, IGES or STL |
+| `screenshot` | Capture the current view as an image (optionally from a standard view / display mode) |
+| `set_view` | Switch the standard view and display mode |
 | `run_command` | Send a raw ZW3D command (disabled unless enabled by environment variable) |
 | `undo` / `redo` | Undo / redo whole tool calls |
 
@@ -90,11 +93,23 @@ clients receive it automatically as the MCP `instructions`, and it is also avail
 | `fillet_edges` | Round edges with a constant radius |
 | `chamfer_edges` | Chamfer edges |
 | `shell_shape` | Hollow out a solid, optionally leaving faces open |
-| `create_hole` | Cut simple, counterbore or countersink holes on a planar face |
+| `create_hole` | Cut simple, counterbore, countersink or threaded holes on a planar face |
 | `draft_faces` | Apply a draft angle to faces |
 | `pattern_linear` | Repeat a solid or features in a line or grid |
 | `pattern_circular` | Repeat a solid or features around an axis |
 | `mirror` | Mirror a solid or features across a plane |
+| `move_shapes` | Move and/or rotate solids |
+| `scale_shapes` | Scale solids uniformly or per axis |
+| `create_rib` | Add a rib from an open profile |
+| `thicken_faces` | Create a solid by thickening faces |
+| `trim_shape` | Cut away one side of a solid with a plane or cutter faces |
+| `split_shape` | Split a solid into separate solids |
+| `extend_face` | Extend a face outward |
+| `set_color` | Colour faces or solids |
+| `delete_shapes` | Delete solids |
+| `delete_features` | Delete history features |
+| `suppress_features` | Suppress or unsuppress features |
+| `rename_feature` | Rename a history feature |
 
 **Queries**
 
@@ -105,6 +120,7 @@ clients receive it automatically as the MCP `instructions`, and it is also avail
 | `list_edges` | List the edges of a solid with their geometry |
 | `list_features` | List the history features of the part |
 | `get_bounding_box` | Get the bounding box of a solid |
+| `measure_distance` | Minimum distance between two solids, faces or edges (0 = touching) |
 | `get_mass_props` | Get volume, area, mass and centre of gravity |
 
 **Parametric edits**
@@ -126,7 +142,12 @@ clients receive it automatically as the MCP `instructions`, and it is also avail
 | `new_assembly` | Create a new assembly file |
 | `insert_component` | Insert a saved part into the active assembly |
 | `list_components` | List the components of the active assembly |
+| `list_component_faces` | List the faces of a component as pick paths for constraints |
+| `add_constraint` | Add an assembly constraint (lock, coincident, concentric, distance, parallel, perpendicular, tangent, angular) |
 | `new_drawing` | Create a drawing with the standard views of a saved part |
+| `list_drawing_views` | List the drawings and views of the active file |
+| `auto_dimension` | Add automatic dimensions to a drawing view |
+| `add_bom` | Insert a bill-of-materials table |
 
 ## Build from source (Windows, VS 2022)
 
