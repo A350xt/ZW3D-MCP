@@ -59,6 +59,8 @@ clients receive it automatically as the MCP `instructions`, and it is also avail
 | `import_file` | Import STEP, Parasolid, SAT, IGES or STL |
 | `screenshot` | Capture the current view as an image (optionally from a standard view / display mode) |
 | `set_view` | Switch the standard view and display mode |
+| `list_dialogs` | Read the pop-up dialogs ZW3D is showing (title, text, buttons) |
+| `dismiss_dialog` | Press a button of the topmost pop-up (accept, cancel or by caption) |
 | `run_command` | Send a raw ZW3D command (disabled unless enabled by environment variable) |
 | `undo` / `redo` | Undo / redo whole tool calls |
 

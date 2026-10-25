@@ -26,6 +26,7 @@ const char* const kInstructions = R"GUIDE(Controls a running ZW3D 2025+ (not ZWC
 - Combine solids with boolean (add / subtract / intersect) or the `combine` argument of the profile tools (none = new body, add, remove, intersect). Subtracting a tool that does not overlap the base is refused.
 - Finishing: fillet_edges, chamfer_edges, shell_shape, draft_faces, create_hole (needs a planar face_id from list_faces), pattern_linear, pattern_circular, mirror, sweep, loft.
 - Reshaping: move_shapes (translate / rotate), scale_shapes, create_rib, thicken_faces, trim_shape and split_shape (plane or cutter faces), extend_face. Cleanup: delete_shapes, delete_features, suppress_features, rename_feature. Look: set_color (face ids), screenshot with view / display_mode, set_view. Measure: measure_distance (0 = touching / interfering).
+- Pop-ups: if a call fails with DIALOG_OPEN (or times out), ZW3D shows a dialog. list_dialogs reads its title, text and buttons; dismiss_dialog presses a button (accept / cancel / a named button). Read the question first - do not blindly accept delete/overwrite prompts - then re-check the model with list_shapes.
 - Existing files: open_file for .Z3PRT/.Z3/.Z3ASM, import_file for STEP / Parasolid / SAT / IGES / STL, then list_shapes and modify.
 - Assemblies: new_assembly, insert_component, list_components, add_constraint (lock needs only component ids; face constraints use pick paths from list_component_faces, experimental). Drawings: new_drawing, list_drawing_views, auto_dimension, add_bom (experimental).
 - Springs and threads: create_hole with a `thread` object for tapped holes; helical_sweep (tooth/wire profile + axis + turns + pitch; combine=remove/add on a body for real threads); add_thread for a cosmetic thread on a hole/shaft face.
@@ -948,6 +949,22 @@ void build() {
       schema({{"id1", t_int()}, {"id2", t_int()}}, {"id1", "id2"}),
       [](const json& a) {
         return call("measure_distance", {{"id1", val::one_id(req(a, "id1"), "id1")}, {"id2", val::one_id(req(a, "id2"), "id2")}});
+      });
+
+  add("list_dialogs",
+      "List the pop-up dialogs ZW3D currently shows (title, message texts, button captions, whether modal). Works even while a modal dialog blocks ZW3D. Other tools fail "
+      "with DIALOG_OPEN while a modal dialog is open; use this to see what it asks, then dismiss_dialog.",
+      schema({}), [](const json&) { return call("list_dialogs", json::object(), 10000); });
+
+  add("dismiss_dialog",
+      "Answer the topmost pop-up dialog of ZW3D: action 'accept' presses OK / Yes / Continue / Apply (确定 / 是 / 继续), 'cancel' presses Cancel / No / Close (取消 / 否 / 关闭); "
+      "or give `button` = the caption (substring) of the exact button to press. Read the dialog with list_dialogs first and prefer the button that matches its question - "
+      "do not blindly accept confirmations such as delete/overwrite prompts. Afterwards check the model (list_shapes) because the interrupted operation may have run or not.",
+      schema({{"action", t_enum({"accept", "cancel"}, "accept")}, {"button", t_str("Caption of the button to press (substring match); overrides action.")}}),
+      [](const json& a) {
+        json p = {{"action", has(a, "action") ? enum_of(a, "action", {"accept", "cancel"}) : std::string("accept")}};
+        if (has(a, "button")) p["button"] = trim(str_req(a, "button"));
+        return call("dismiss_dialog", p, 15000);
       });
 
   add("run_command",

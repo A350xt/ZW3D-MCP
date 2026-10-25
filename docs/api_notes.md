@@ -241,3 +241,16 @@ reads the referenced part with `cvxCompInqPart` + `cvxPartInqShapes(file, part)`
 (face-in-component path layout `{..., COMP, FACE}` is still a guess; `cvxPartInqShapeFaces` may only work for the active part - the result says so).
 `lock` errors now include the two paths used. Next to try if it still fails: `ZwComponentActivate` + `cvxEntPathInqActive`, or the new
 `ZwConstraintCoincidentAdd` (szwEntityHandle via `ZwEntityPathTransfer`).
+
+## Pop-up dialogs (NOT yet run in ZW3D)
+
+ZW3D's Qt dialogs block the main thread and API calls can wait on them (confirmations, error boxes). `dialogs.cpp` uses only Win32 + UI Automation (no ZW3D API),
+so it works on the socket thread while the main thread is blocked:
+- detection: visible top-level windows of the process; modal = some other top-level window is disabled; candidates = `GetLastActivePopup(disabled)`, `#32770` boxes,
+  windows owned by a disabled window; tooltips (`WS_EX_NOACTIVATE`) and tiny windows ignored;
+- contents: UI Automation (`IUIAutomation::ElementFromHandle` + `FindAll`), Button / Text controls; native child `Button`/`Static` windows as fallback;
+- dismissal: UIA `InvokePattern` on the matching button (accept: OK/Yes/Continue/确定/是..., cancel: Cancel/No/Close/取消/否...), else `BM_CLICK`, else Enter/Esc, else `WM_CLOSE`;
+- `Dispatcher::Execute` returns `DIALOG_OPEN` (with the dialog's title/text/buttons) before running a call while a modal dialog is open, and while waiting
+  when one appears (checked every 500 ms after 1.5 s); the queued job is cancelled if it has not started, else its result is discarded.
+Unknown until tried live: whether ZW3D's Qt build exposes dialog text/buttons through UI Automation (otherwise only the title is reported and Enter/Esc/WM_CLOSE are used),
+and whether dialogs opened from inside an API call are visible to `EnumWindows` while the call is running.

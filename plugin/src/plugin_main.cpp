@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <string>
 #include "VxApi.h"
+#include "dialogs.h"
 #include "dispatcher.h"
 #include "handlers/handlers.h"
 #include "mcp/mcp.h"
@@ -24,6 +25,18 @@ static void say(const std::string& s) { cvxMsgDisp(s.c_str()); }
 static bool start_server() {
   if (server().running()) return true;
   mcp::set_executor([](const std::string& method, const nlohmann::json& params, int timeout_ms) {
+    // Dialog tools run on the calling (socket) thread: they must work while ZW3D's main thread is blocked behind a modal dialog.
+    if (method == "list_dialogs") {
+      auto d = find_dialogs(true);
+      return nlohmann::json{{"ok", true}, {"result", {{"count", d.size()}, {"dialogs", dialogs_to_json(d)}}}};
+    }
+    if (method == "dismiss_dialog") {
+      try {
+        return nlohmann::json{{"ok", true}, {"result", dismiss_dialog(params.value("action", std::string("accept")), params.value("button", std::string()))}};
+      } catch (const std::exception& e) {
+        return nlohmann::json{{"ok", false}, {"error", {{"code", "NO_DIALOG"}, {"api_code", nullptr}, {"message", e.what()}, {"hint", "list_dialogs 查看当前是否有弹窗。"}}}};
+      }
+    }
     return dispatcher().Execute(method, params, timeout_ms);
   });
   std::string err;

@@ -59,6 +59,8 @@ AI 智能体 ── MCP over HTTP: POST http://127.0.0.1:47823/mcp ──▶ zw3
 | `import_file` | 导入 STEP、Parasolid、SAT、IGES 或 STL |
 | `screenshot` | 截取当前视图并作为图片返回（可指定标准视角和显示模式） |
 | `set_view` | 切换标准视角和显示模式 |
+| `list_dialogs` | 读取中望3D 当前弹出的对话框（标题、文字、按钮） |
+| `dismiss_dialog` | 点击最上层弹窗的按钮（确认、取消或按名称） |
 | `run_command` | 发送原始中望3D 命令（默认关闭，需环境变量开启） |
 | `undo` / `redo` | 按整次工具调用撤销 / 重做 |
 

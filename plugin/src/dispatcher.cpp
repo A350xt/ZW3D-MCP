@@ -1,6 +1,7 @@
 #include "dispatcher.h"
 #include <chrono>
 #include "errors.h"
+#include "dialogs.h"
 #include "handlers/handlers.h"
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
@@ -58,6 +59,15 @@ json Dispatcher::Execute(const std::string& method, const json& params, int time
   };
   if (stopping_ || !hwnd_) return error("SHUTDOWN", "插件未运行", "");
 
+  // A modal dialog blocks ZW3D's UI thread: running an API call now would hang or misbehave, so report the dialog instead.
+  auto dialog_error = [&](const char* prefix) {
+    std::string sum = dialogs_summary(find_dialogs(true));
+    return json{{"ok", false}, {"error", {{"code", "DIALOG_OPEN"}, {"api_code", nullptr},
+                                           {"message", std::string(prefix) + "中望3D 弹出了对话框：" + sum},
+                                           {"hint", "调用 list_dialogs 查看详情，再用 dismiss_dialog（action=accept 或 cancel，或指定 button）处理，然后用 list_shapes 等确认模型状态后重试。"}}}};
+  };
+  if (modal_dialog_open()) return dialog_error("");
+
   auto job = std::make_shared<Job>();
   job->method = method;
   job->params = params;
@@ -70,8 +80,18 @@ json Dispatcher::Execute(const std::string& method, const json& params, int time
 
   // Wait in short slices so Shutdown() (called on the main thread during Exit) can never deadlock against us.
   auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+  auto next_dialog_check = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
   while (fut.wait_for(std::chrono::milliseconds(50)) != std::future_status::ready) {
     if (stopping_) return error("SHUTDOWN", "插件正在卸载", "");
+    // The call itself may have opened a dialog (confirmation, error box) and is waiting for an answer: stop waiting and say so.
+    // The job stays queued/running; its result is discarded. It is applied once the dialog is answered.
+    if (std::chrono::steady_clock::now() >= next_dialog_check) {
+      next_dialog_check = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+      if (modal_dialog_open()) {
+        job->cancelled = true;
+        return dialog_error("操作尚未完成：");
+      }
+    }
     if (std::chrono::steady_clock::now() >= deadline) {
       job->cancelled = true;  // if it has not started yet, the main thread will skip it
       return error("TIMEOUT", "等待中望3D主线程执行超时",

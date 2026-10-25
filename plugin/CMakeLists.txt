@@ -37,6 +37,7 @@ add_library(zw3dmcp SHARED
   src/mcp/tools.cpp
   src/mcp/mcp.cpp
   src/dispatcher.cpp
+  src/dialogs.cpp
   src/encoding.cpp
   src/errors.cpp
   src/handlers/common.cpp
@@ -49,7 +50,7 @@ add_library(zw3dmcp SHARED
 set_target_properties(zw3dmcp PROPERTIES OUTPUT_NAME "zw3dmcp" PREFIX "")  # DLL name fixes Init/Exit names
 target_compile_features(zw3dmcp PRIVATE cxx_std_17)
 target_include_directories(zw3dmcp PRIVATE src third_party "${ZW3D_SDK_DIR}/api/inc")
-target_link_libraries(zw3dmcp PRIVATE "${ZW3D_SDK_DIR}/ZW3D.lib" ws2_32)
+target_link_libraries(zw3dmcp PRIVATE "${ZW3D_SDK_DIR}/ZW3D.lib" ws2_32 ole32 oleaut32 uuid)
 target_compile_definitions(zw3dmcp PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
 if(MSVC)
   # Source is UTF-8. Keep the default /MD runtime (ZW3D itself uses the DLL runtime) -- do not switch to /MT.
