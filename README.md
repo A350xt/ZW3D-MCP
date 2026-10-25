@@ -54,6 +54,7 @@ clients receive it automatically as the MCP `instructions`, and it is also avail
 | `ping` | Check the connection; plugin version, active file and part |
 | `new_part` | Create a new part file (`.Z3PRT`) and make it active |
 | `save_part` | Save, or Save As when a path is given |
+| `close_file` | Close the active file (save, discard or ask) |
 | `export_step` | Export the active file as STEP |
 | `open_file` | Open an existing ZW3D file |
 | `import_file` | Import STEP, Parasolid, SAT, IGES or STL |

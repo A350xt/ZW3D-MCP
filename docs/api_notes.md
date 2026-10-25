@@ -254,3 +254,8 @@ so it works on the socket thread while the main thread is blocked:
   when one appears (checked every 500 ms after 1.5 s); the queued job is cancelled if it has not started, else its result is discarded.
 Unknown until tried live: whether ZW3D's Qt build exposes dialog text/buttons through UI Automation (otherwise only the title is reported and Enter/Esc/WM_CLOSE are used),
 and whether dialogs opened from inside an API call are visible to `EnumWindows` while the call is running.
+
+## close_file
+
+`close_file` -> `cvxFileClose2(Name, Option)` (Name empty = active file; Option 0 prompt, 1 save, 2 discard + clear undo info). Not yet run in ZW3D. With `save=ask`
+ZW3D's own "save changes?" box appears and is handled with `list_dialogs` / `dismiss_dialog`. Closing a never-saved file with `save=save` may open a Save As box.

@@ -18,7 +18,7 @@ const char* const kInstructions = R"GUIDE(Controls a running ZW3D 2025+ (not ZWC
 1. ping to check the connection. new_part creates a file (.Z3PRT) and makes it active; nothing can be modeled before that.
 2. Model with ONE tool call per design step. Every modeling tool returns the affected shape_id(s) with bounding box and volume: check them against your intent before the next step instead of calling extra queries.
 3. After a few steps verify with get_bounding_box / get_mass_props and look with screenshot. When something is wrong, undo (whole tool calls) or fix it with the editing tools, do not pile new geometry on top.
-4. save_part when done (give a path for Save As); export_step for exchange files.
+4. save_part when done (give a path for Save As); export_step for exchange files; close_file(save=save|discard) to close a file you are done with.
 
 # Choosing a tool
 - Simple blocks: create_box, create_cylinder (axis +Z from the bottom centre), create_sphere.
@@ -212,6 +212,16 @@ void build() {
         json p = json::object();
         if (has(a, "path") && arg(a, "path").is_string() && !arg(a, "path").get<std::string>().empty()) p["path"] = arg(a, "path");
         return call("save_part", p);
+      });
+
+  add("close_file",
+      "Close the active ZW3D file (or the file at `path`). save: 'save' saves changes first, 'discard' throws them away, 'ask' (default) lets ZW3D prompt - the prompt then "
+      "shows up as DIALOG_OPEN and is answered with list_dialogs / dismiss_dialog. All ids of the closed file become invalid. Use discard only when the user does not need the model.",
+      schema({{"save", t_enum({"save", "discard", "ask"}, "ask")}, {"path", t_str("File to close; default the active file.")}}),
+      [](const json& a) {
+        json p = {{"save", has(a, "save") ? enum_of(a, "save", {"save", "discard", "ask"}) : std::string("ask")}};
+        if (has(a, "path")) p["path"] = trim(str_req(a, "path"));
+        return call("close_file", p);
       });
 
   add("export_step", "Export the active file to a STEP file at `path` (full path ending in .step or .stp).", schema({{"path", t_str()}}, {"path"}),

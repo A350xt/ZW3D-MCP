@@ -54,6 +54,7 @@ AI 智能体 ── MCP over HTTP: POST http://127.0.0.1:47823/mcp ──▶ zw3
 | `ping` | 检查连接；返回插件版本、当前文件与零件 |
 | `new_part` | 新建零件文件（`.Z3PRT`）并激活 |
 | `save_part` | 保存；给出路径则另存为 |
+| `close_file` | 关闭当前文件（保存、放弃或询问） |
 | `export_step` | 把当前文件导出为 STEP |
 | `open_file` | 打开已有的中望3D 文件 |
 | `import_file` | 导入 STEP、Parasolid、SAT、IGES 或 STL |

@@ -56,6 +56,24 @@ json h_save_part(const json& p) {
   return {{"saved", true}, {"file", current_file_utf8()}};
 }
 
+json h_close_file(const json& p) {
+  std::string mode = p.value("save", std::string("ask"));
+  int option = mode == "save" ? 1 : mode == "discard" ? 2 : 0;
+  if (mode != "save" && mode != "discard" && mode != "ask") invalid_input("save 取值无效: " + mode, "可选: save, discard, ask");
+  std::string closing = current_file_utf8();
+  char name[512] = {0};
+  if (p.contains("path") && p["path"].is_string() && !p["path"].get<std::string>().empty()) {
+    to_ansi_path(p["path"].get<std::string>(), name, "path");
+    closing = p["path"].get<std::string>();
+  } else if (closing.empty()) {
+    throw ApiError("WRONG_ROOT_ENV", "没有已打开的文件", "先调用 new_part 或 open_file。");
+  }
+  // option 0 lets ZW3D ask "save changes?": that dialog is reported as DIALOG_OPEN and answered with dismiss_dialog.
+  cvxFileClose2(name, option);
+  return {{"closed", closing}, {"save", mode}, {"active_file", current_file_utf8()},
+          {"note", "关闭后文件内的实体/特征 id 全部失效；如还有其他打开的文件，当前激活文件见 active_file。"}};
+}
+
 json h_export_step(const json& p) {
   char path[512];
   to_ansi_path(p.at("path").get<std::string>(), path, "path");
@@ -236,6 +254,7 @@ json h_run_command(const json& p) {
 void register_file_handlers(std::map<std::string, Handler>& m) {
   m["new_part"] = h_new_part;
   m["save_part"] = h_save_part;
+  m["close_file"] = h_close_file;
   m["export_step"] = h_export_step;
   m["screenshot"] = h_screenshot;
   m["set_view"] = h_set_view;
