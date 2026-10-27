@@ -2,7 +2,7 @@
 .SYNOPSIS  Builds the release zip: dist\zw3d-mcp-v<version>-win64.zip
            (the single plugin DLL + install guide; users copy the DLL by hand). Needs VS 2022 and CMake.
 #>
-param([string]$Version = "0.4.2")
+param([string]$Version = "0.4.3")
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $dist = Join-Path $repo "dist"
