@@ -259,3 +259,9 @@ and whether dialogs opened from inside an API call are visible to `EnumWindows` 
 
 `close_file` -> `cvxFileClose2(Name, Option)` (Name empty = active file; Option 0 prompt, 1 save, 2 discard + clear undo info). Not yet run in ZW3D. With `save=ask`
 ZW3D's own "save changes?" box appears and is handled with `list_dialogs` / `dismiss_dialog`. Closing a never-saved file with `save=save` may open a Save As box.
+
+## export_file
+
+`export_file` -> `cvxFileExportInit(type, 0, data)` + `cvxFileExport(type, path, data)` for STEP / IGES / Parasolid (text `.x_t`, binary `.x_b`) / STL / OBJ / JT / PDF / DWG / DXF,
+data structs `svx{STEP,IGES,PARA,STL,OBJ,Pdf,DWG,JT}Data` held in one union. STL `FileFormat` = ascii flag; DWG `FileType` 0 = DWG, 1 = DXF(ASCII). After the call the file is
+checked on disk (`EXPORT_FAILED` otherwise) and its size returned. Defaults of each struct come from the Init call. Not yet run in ZW3D (only STEP was verified before).

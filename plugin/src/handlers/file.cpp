@@ -74,6 +74,64 @@ json h_close_file(const json& p) {
           {"note", "关闭后文件内的实体/特征 id 全部失效；如还有其他打开的文件，当前激活文件见 active_file。"}};
 }
 
+// Generic export. The format comes from `format` or the file extension; each format has its own data struct, initialised by cvxFileExportInit.
+json h_export_file(const json& p) {
+  std::string path_utf8 = p.at("path").get<std::string>();
+  std::string fmt = p.value("format", std::string());
+  std::string ext;
+  size_t dot = path_utf8.find_last_of('.');
+  if (dot != std::string::npos) ext = path_utf8.substr(dot + 1);
+  std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+  if (fmt.empty()) {
+    if (ext == "step" || ext == "stp") fmt = "step";
+    else if (ext == "iges" || ext == "igs") fmt = "iges";
+    else if (ext == "x_t") fmt = "parasolid";
+    else if (ext == "x_b") fmt = "parasolid_binary";
+    else if (ext == "stl") fmt = "stl";
+    else if (ext == "obj") fmt = "obj";
+    else if (ext == "pdf") fmt = "pdf";
+    else if (ext == "dwg") fmt = "dwg";
+    else if (ext == "dxf") fmt = "dxf";
+    else if (ext == "jt") fmt = "jt";
+    else invalid_input("无法从扩展名判断导出格式: ." + ext, "给出 format，或使用 .step .iges .x_t .x_b .stl .obj .pdf .dwg .dxf .jt。");
+  }
+  union ExportBuf {
+    svxSTEPData step; svxIGESData iges; svxPARAData para; svxSTLData stl; svxOBJData obj; svxPdfData pdf; svxDWGData dwg; svxJTData jt;
+  };
+  ExportBuf* buf = new ExportBuf();
+  std::memset(buf, 0, sizeof(*buf));
+  struct Free { ExportBuf* b; ~Free() { delete b; } } guard{buf};
+  evxExportType type;
+  if (fmt == "step") type = VX_EXPORT_TYPE_STEP;
+  else if (fmt == "iges") type = VX_EXPORT_TYPE_IGES;
+  else if (fmt == "parasolid") type = VX_EXPORT_TYPE_PARA_TEXT;
+  else if (fmt == "parasolid_binary") type = VX_EXPORT_TYPE_PARA_BINARY;
+  else if (fmt == "stl") type = VX_EXPORT_TYPE_STL;
+  else if (fmt == "obj") type = VX_EXPORT_TYPE_OBJ;
+  else if (fmt == "pdf") type = VX_EXPORT_TYPE_PDF;
+  else if (fmt == "dwg" || fmt == "dxf") type = VX_EXPORT_TYPE_DWG;
+  else if (fmt == "jt") type = VX_EXPORT_TYPE_JT;
+  else invalid_input("format 取值无效: " + fmt, "可选: step, iges, parasolid, parasolid_binary, stl, obj, pdf, dwg, dxf, jt");
+
+  char path[512];
+  to_ansi_path(path_utf8, path, "path");
+  check_api(cvxFileExportInit(type, 0, buf), "cvxFileExportInit");
+  if (type == VX_EXPORT_TYPE_STL) buf->stl.FileFormat = p.value("ascii", false) ? 1 : 0;
+  if (type == VX_EXPORT_TYPE_DWG) buf->dwg.FileType = fmt == "dxf" ? 1 : 0;
+  try {
+    check_api(cvxFileExport(type, path, buf), "cvxFileExport");
+  } catch (ApiError& e) {
+    e.hint = "导出 " + fmt + " 失败：确认目录存在且可写、文件未被占用；工程图格式(pdf/dwg/dxf)需要先激活工程图，3D 格式需要激活零件或装配。原提示：" + e.hint;
+    throw;
+  }
+  WIN32_FILE_ATTRIBUTE_DATA fa{};
+  std::wstring wpath = utf8_to_wide(path_utf8);
+  if (!GetFileAttributesExW(wpath.c_str(), GetFileExInfoStandard, &fa))
+    throw ApiError("EXPORT_FAILED", "导出接口返回成功但没有生成文件", "确认路径和扩展名正确，当前文件类型适合该格式。");
+  unsigned long long size = ((unsigned long long)fa.nFileSizeHigh << 32) | fa.nFileSizeLow;
+  return {{"path", path_utf8}, {"format", fmt}, {"size_bytes", size}};
+}
+
 json h_export_step(const json& p) {
   char path[512];
   to_ansi_path(p.at("path").get<std::string>(), path, "path");
@@ -256,6 +314,7 @@ void register_file_handlers(std::map<std::string, Handler>& m) {
   m["save_part"] = h_save_part;
   m["close_file"] = h_close_file;
   m["export_step"] = h_export_step;
+  m["export_file"] = h_export_file;
   m["screenshot"] = h_screenshot;
   m["set_view"] = h_set_view;
   m["open_file"] = h_open_file;

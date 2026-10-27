@@ -56,6 +56,7 @@ clients receive it automatically as the MCP `instructions`, and it is also avail
 | `save_part` | Save, or Save As when a path is given |
 | `close_file` | Close the active file (save, discard or ask) |
 | `export_step` | Export the active file as STEP |
+| `export_file` | Export to STEP, IGES, Parasolid, STL, OBJ, JT, PDF, DWG or DXF |
 | `open_file` | Open an existing ZW3D file |
 | `import_file` | Import STEP, Parasolid, SAT, IGES or STL |
 | `screenshot` | Capture the current view as an image (optionally from a standard view / display mode) |

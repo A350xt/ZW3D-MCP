@@ -56,6 +56,7 @@ AI 智能体 ── MCP over HTTP: POST http://127.0.0.1:47823/mcp ──▶ zw3
 | `save_part` | 保存；给出路径则另存为 |
 | `close_file` | 关闭当前文件（保存、放弃或询问） |
 | `export_step` | 把当前文件导出为 STEP |
+| `export_file` | 导出为 STEP、IGES、Parasolid、STL、OBJ、JT、PDF、DWG 或 DXF |
 | `open_file` | 打开已有的中望3D 文件 |
 | `import_file` | 导入 STEP、Parasolid、SAT、IGES 或 STL |
 | `screenshot` | 截取当前视图并作为图片返回（可指定标准视角和显示模式） |

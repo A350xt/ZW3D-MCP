@@ -18,7 +18,7 @@ const char* const kInstructions = R"GUIDE(Controls a running ZW3D 2025+ (not ZWC
 1. ping to check the connection. new_part creates a file (.Z3PRT) and makes it active; nothing can be modeled before that.
 2. Model with ONE tool call per design step. Every modeling tool returns the affected shape_id(s) with bounding box and volume: check them against your intent before the next step instead of calling extra queries.
 3. After a few steps verify with get_bounding_box / get_mass_props and look with screenshot. When something is wrong, undo (whole tool calls) or fix it with the editing tools, do not pile new geometry on top.
-4. save_part when done (give a path for Save As); export_step for exchange files; close_file(save=save|discard) to close a file you are done with.
+4. save_part when done (give a path for Save As); export_file (STEP / IGES / Parasolid / STL / OBJ / JT, and PDF / DWG / DXF for drawings) or export_step for exchange files; close_file(save=save|discard) to close a file you are done with.
 
 # Choosing a tool
 - Simple blocks: create_box, create_cylinder (axis +Z from the bottom centre), create_sphere.
@@ -222,6 +222,28 @@ void build() {
         json p = {{"save", has(a, "save") ? enum_of(a, "save", {"save", "discard", "ask"}) : std::string("ask")}};
         if (has(a, "path")) p["path"] = trim(str_req(a, "path"));
         return call("close_file", p);
+      });
+
+  add("export_file",
+      "Export the active file to another format. The format is taken from the extension of `path` (full path) or from `format`: step (.step/.stp), iges (.iges/.igs), "
+      "parasolid (.x_t), parasolid_binary (.x_b), stl (.stl; ascii=true for text STL), obj (.obj), jt (.jt) for parts/assemblies, and pdf (.pdf), dwg (.dwg), dxf (.dxf) "
+      "for drawings (activate or open the drawing first). Returns the written file size. For a picture of the current view use screenshot.",
+      schema({{"path", t_str("Full output path, e.g. D:\\out\\part.stl")},
+              {"format", t_enum({"step", "iges", "parasolid", "parasolid_binary", "stl", "obj", "pdf", "dwg", "dxf", "jt"})}, {"ascii", t_bool("stl only: text instead of binary")}},
+             {"path"}),
+      [](const json& a) {
+        std::string p = trim(str_req(a, "path"));
+        if (p.empty()) bad("path must not be empty");
+        json params = {{"path", p}, {"ascii", bool_or(a, "ascii", false)}};
+        if (has(a, "format")) params["format"] = enum_of(a, "format", {"step", "iges", "parasolid", "parasolid_binary", "stl", "obj", "pdf", "dwg", "dxf", "jt"});
+        else {
+          std::string l = lower(p);
+          bool known = false;
+          for (const char* e : {".step", ".stp", ".iges", ".igs", ".x_t", ".x_b", ".stl", ".obj", ".pdf", ".dwg", ".dxf", ".jt"})
+            if (ends_with(l, e)) known = true;
+          if (!known) bad("cannot tell the format from the file extension", "Use .step .iges .x_t .x_b .stl .obj .pdf .dwg .dxf .jt or pass format.");
+        }
+        return call("export_file", params);
       });
 
   add("export_step", "Export the active file to a STEP file at `path` (full path ending in .step or .stp).", schema({{"path", t_str()}}, {"path"}),
