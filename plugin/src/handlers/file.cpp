@@ -1,6 +1,7 @@
 // File-level handlers: new/save/export/screenshot and the optional raw-command escape hatch.
 #include <windows.h>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <algorithm>
 #include <cctype>
@@ -210,6 +211,152 @@ json h_set_view(const json& p) {
   return {{"view", p.value("view", std::string())}, {"display_mode", p.value("display_mode", std::string())}};
 }
 
+// ---- arbitrary view angle ---------------------------------------------------------------------------------------
+// A view is described by three orthonormal world vectors: X = screen right, Y = screen up, Z = from the model towards the viewer.
+// How cvxViewGet / cvxViewSet store them in an svxMatrix is not documented, so the convention is calibrated once at run time against the
+// standard front view (X = +x, Y = +z, Z = -y), trying the four plausible layouts (axes as matrix columns or rows, Z towards or away from the viewer).
+struct V3d { double x, y, z; };
+V3d v_add(V3d a, V3d b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
+V3d v_mul(V3d a, double s) { return {a.x * s, a.y * s, a.z * s}; }
+double v_dot(V3d a, V3d b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+V3d v_cross(V3d a, V3d b) { return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x}; }
+V3d v_unit(V3d a) {
+  double l = std::sqrt(v_dot(a, a));
+  if (l < 1e-12) invalid_input("方向向量不能为零");
+  return v_mul(a, 1.0 / l);
+}
+V3d v_rot(V3d v, V3d k, double a) {  // Rodrigues, k is a unit axis
+  double c = std::cos(a), s = std::sin(a);
+  return v_add(v_add(v_mul(v, c), v_mul(v_cross(k, v), s)), v_mul(k, v_dot(k, v) * (1 - c)));
+}
+
+struct ViewAxes { V3d x, y, z; };
+
+svxMatrix to_view_matrix(const ViewAxes& a, int layout) {
+  V3d X = a.x, Y = a.y, Z = a.z;
+  if (layout >= 2) Z = v_mul(Z, -1);  // Z pointing away from the viewer
+  svxMatrix m{};
+  m.identity = 0;
+  if (layout % 2 == 0) {  // axes are the "<axis><component>" fields: x-axis = (xx, xy, xz)
+    m.xx = X.x; m.xy = X.y; m.xz = X.z;
+    m.yx = Y.x; m.yy = Y.y; m.yz = Y.z;
+    m.zx = Z.x; m.zy = Z.y; m.zz = Z.z;
+  } else {  // transposed
+    m.xx = X.x; m.yx = X.y; m.zx = X.z;
+    m.xy = Y.x; m.yy = Y.y; m.zy = Y.z;
+    m.xz = Z.x; m.yz = Z.y; m.zz = Z.z;
+  }
+  return m;
+}
+
+ViewAxes from_view_matrix(const svxMatrix& m, int layout) {
+  ViewAxes a;
+  if (layout % 2 == 0) {
+    a.x = {m.xx, m.xy, m.xz}; a.y = {m.yx, m.yy, m.yz}; a.z = {m.zx, m.zy, m.zz};
+  } else {
+    a.x = {m.xx, m.yx, m.zx}; a.y = {m.xy, m.yy, m.zy}; a.z = {m.xz, m.yz, m.zz};
+  }
+  if (layout >= 2) a.z = v_mul(a.z, -1);
+  return a;
+}
+
+bool matrix_close(const svxMatrix& a, const svxMatrix& b) {
+  const double* pa[] = {&a.xx, &a.yx, &a.zx, &a.xy, &a.yy, &a.zy, &a.xz, &a.yz, &a.zz};
+  const double* pb[] = {&b.xx, &b.yx, &b.zx, &b.xy, &b.yy, &b.zy, &b.xz, &b.yz, &b.zz};
+  for (int i = 0; i < 9; ++i)
+    if (std::fabs(*pa[i] - *pb[i]) > 1e-4) return false;
+  return true;
+}
+
+// Index of the matching layout (0..3), calibrated on first use. Leaves the view on the front view; callers set the final view afterwards.
+int view_layout() {
+  static int layout = -2;
+  if (layout != -2) return layout;
+  cvxViewStd(VX_VIEW_FRONT, 100.0);
+  svxMatrix f{};
+  double ext = 0;
+  cvxViewGet(&f, &ext);
+  ViewAxes front{{1, 0, 0}, {0, 0, 1}, {0, -1, 0}};
+  layout = -1;
+  for (int l = 0; l < 4; ++l)
+    if (matrix_close(f, to_view_matrix(front, l))) {
+      layout = l;
+      break;
+    }
+  if (layout < 0)
+    throw ApiError("VIEW_CONVENTION", "无法识别视图矩阵的约定（前视图矩阵与任何预期布局都不吻合）",
+                   "前视图矩阵: x(" + std::to_string(f.xx) + "," + std::to_string(f.xy) + "," + std::to_string(f.xz) + ") y(" + std::to_string(f.yx) + "," +
+                       std::to_string(f.yy) + "," + std::to_string(f.yz) + ") z(" + std::to_string(f.zx) + "," + std::to_string(f.zy) + "," + std::to_string(f.zz) +
+                       ")。把它反馈给开发者；改用 screenshot/set_view 的标准视角。");
+  return layout;
+}
+
+// Orientation from azimuth/elevation: the camera sits in direction (cos el cos az, cos el sin az, sin el) from the target, world +Z up.
+// az = -90, el = 0 is the front view, az = 0 the right view, el = 90 the top view; roll turns the picture about the viewing direction.
+ViewAxes axes_from_angles(double az_deg, double el_deg, double roll_deg) {
+  const double d2r = 3.14159265358979323846 / 180.0;
+  double az = az_deg * d2r, el = el_deg * d2r;
+  V3d z{std::cos(el) * std::cos(az), std::cos(el) * std::sin(az), std::sin(el)};
+  V3d up{0, 0, 1};
+  V3d x = v_cross(up, z);
+  if (v_dot(x, x) < 1e-12) {  // looking straight down / up: keep screen-up towards world +Y (top view) or -Y (bottom view)
+    x = {1, 0, 0};
+  }
+  x = v_unit(x);
+  V3d y = v_cross(z, x);
+  ViewAxes a{x, y, z};
+  if (roll_deg != 0) {
+    double r = roll_deg * d2r;
+    a.x = v_unit(v_add(v_mul(x, std::cos(r)), v_mul(y, std::sin(r))));
+    a.y = v_unit(v_add(v_mul(y, std::cos(r)), v_mul(x, -std::sin(r))));
+  }
+  return a;
+}
+
+json h_rotate_view(const json& p) {
+  std::string mode = p.value("mode", std::string("absolute"));
+  if (mode != "absolute" && mode != "relative") invalid_input("mode 必须是 absolute 或 relative");
+  // read the current view before the calibration moves it
+  svxMatrix cur{};
+  double extent = 0;
+  cvxViewGet(&cur, &extent);
+  int layout = view_layout();
+
+  ViewAxes next;
+  if (mode == "relative") {
+    ViewAxes c = from_view_matrix(cur, layout);
+    double d2r = 3.14159265358979323846 / 180.0;
+    double daz = p.value("azimuth", 0.0) * d2r, del = p.value("elevation", 0.0) * d2r, droll = p.value("roll", 0.0) * d2r;
+    V3d zaxis{0, 0, 1};
+    // turntable about the world Z axis, then tilt about the screen X axis, then roll about the viewing direction
+    c = {v_rot(c.x, zaxis, daz), v_rot(c.y, zaxis, daz), v_rot(c.z, zaxis, daz)};
+    c = {c.x, v_rot(c.y, c.x, -del), v_rot(c.z, c.x, -del)};
+    c = {v_rot(c.x, c.z, droll), v_rot(c.y, c.z, droll), c.z};
+    next = {v_unit(c.x), v_unit(c.y), v_unit(c.z)};
+  } else if (p.contains("direction") && !p["direction"].is_null()) {
+    svxVector d = to_vector(p["direction"], "direction");  // from the model towards the camera
+    V3d z = v_unit({d.x, d.y, d.z});
+    V3d up{0, 0, 1};
+    if (p.contains("up") && !p["up"].is_null()) {
+      svxVector u = to_vector(p["up"], "up");
+      up = {u.x, u.y, u.z};
+    }
+    V3d x = v_cross(up, z);
+    if (v_dot(x, x) < 1e-12) invalid_input("up 与 direction 平行", "换一个不平行的 up 向量（默认 [0,0,1]）。");
+    x = v_unit(x);
+    next = {x, v_cross(z, x), z};
+  } else {
+    next = axes_from_angles(p.value("azimuth", -45.0), p.value("elevation", 35.264), p.value("roll", 0.0));
+  }
+
+  svxMatrix m = to_view_matrix(next, layout);
+  cvxViewSet(&m, extent > 0 ? extent : 100.0);
+  if (p.value("zoom_all", true)) cvxDispZoomAll(1);
+  cvxDispRedraw();
+  return {{"eye_direction", {next.z.x, next.z.y, next.z.z}}, {"screen_right", {next.x.x, next.x.y, next.x.z}}, {"screen_up", {next.y.x, next.y.y, next.y.z}},
+          {"mode", mode}};
+}
+
 json h_open_file(const json& p) {
   char path[512];
   to_ansi_path(p.at("path").get<std::string>(), path, "path");
@@ -317,6 +464,7 @@ void register_file_handlers(std::map<std::string, Handler>& m) {
   m["export_file"] = h_export_file;
   m["screenshot"] = h_screenshot;
   m["set_view"] = h_set_view;
+  m["rotate_view"] = h_rotate_view;
   m["open_file"] = h_open_file;
   m["import_file"] = h_import_file;
   m["run_command"] = h_run_command;

@@ -16,6 +16,7 @@ void register_query_handlers(std::map<std::string, Handler>& m);
 void register_file_handlers(std::map<std::string, Handler>& m);
 void register_misc_handlers(std::map<std::string, Handler>& m);
 void register_extra_handlers(std::map<std::string, Handler>& m);
+void register_motion_handlers(std::map<std::string, Handler>& m);
 
 // ---- shared helpers (common.cpp) -----------------------------------------------------------------
 svxPoint to_point(const json& v, const char* name);

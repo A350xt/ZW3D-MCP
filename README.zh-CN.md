@@ -61,6 +61,7 @@ AI 智能体 ── MCP over HTTP: POST http://127.0.0.1:47823/mcp ──▶ zw3
 | `import_file` | 导入 STEP、Parasolid、SAT、IGES 或 STL |
 | `screenshot` | 截取当前视图并作为图片返回（可指定标准视角和显示模式） |
 | `set_view` | 切换标准视角和显示模式 |
+| `rotate_view` | 把三维视图转到任意角度（方位角 / 仰角 / 滚转，或按方向向量；绝对或相对） |
 | `list_dialogs` | 读取中望3D 当前弹出的对话框（标题、文字、按钮） |
 | `dismiss_dialog` | 点击最上层弹窗的按钮（确认、取消或按名称） |
 | `run_command` | 发送原始中望3D 命令（默认关闭，需环境变量开启） |
@@ -138,6 +139,15 @@ AI 智能体 ── MCP over HTTP: POST http://127.0.0.1:47823/mcp ──▶ zw3
 | `set_sketch_variable` | 修改草图变量并重新生成 |
 | `get_feature_data` | 读取特征的可编辑字段 |
 | `set_feature_value` | 修改已有特征的数值参数并重新生成 |
+
+**运动学仿真**（需要先在中望3D 的运动环境里建好刚体、运动副和方案；API 不能创建这些）
+
+| 工具 | 作用 |
+|---|---|
+| `motion_info` | 列出运动仿真的刚体、运动副、驱动和方案 |
+| `set_motion_driver` | 新建或修改驱动（角度 / 位移、函数、参数、时间范围） |
+| `set_motion_solution` | 修改方案（类型、结束时间、帧数） |
+| `run_motion` | 求解并返回各刚体每一帧的位置 / 角度及运动范围 |
 
 **装配与工程图**
 

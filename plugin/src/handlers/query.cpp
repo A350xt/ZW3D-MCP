@@ -163,6 +163,7 @@ const std::map<std::string, Handler>& handler_registry() {
     register_file_handlers(m);
     register_misc_handlers(m);
     register_extra_handlers(m);
+    register_motion_handlers(m);
     return m;
   }();
   return reg;

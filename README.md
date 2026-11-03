@@ -61,6 +61,7 @@ clients receive it automatically as the MCP `instructions`, and it is also avail
 | `import_file` | Import STEP, Parasolid, SAT, IGES or STL |
 | `screenshot` | Capture the current view as an image (optionally from a standard view / display mode) |
 | `set_view` | Switch the standard view and display mode |
+| `rotate_view` | Turn the 3D view to any angle (azimuth / elevation / roll, or by direction vector; absolute or relative) |
 | `list_dialogs` | Read the pop-up dialogs ZW3D is showing (title, text, buttons) |
 | `dismiss_dialog` | Press a button of the topmost pop-up (accept, cancel or by caption) |
 | `run_command` | Send a raw ZW3D command (disabled unless enabled by environment variable) |
@@ -138,6 +139,15 @@ clients receive it automatically as the MCP `instructions`, and it is also avail
 | `set_sketch_variable` | Change a sketch variable and regenerate |
 | `get_feature_data` | Read the editable fields of a feature |
 | `set_feature_value` | Change a numeric parameter of an existing feature and regenerate |
+
+**Kinematics simulation** (needs bodies, joints and a solution set up in ZW3D's motion environment; the API cannot create those)
+
+| Tool | What it does |
+|---|---|
+| `motion_info` | List the bodies, joints, drivers and solutions of the motion setup |
+| `set_motion_driver` | Create or edit a driver (angle / displacement, function, parameters, time range) |
+| `set_motion_solution` | Edit a solution (type, end time, frames) |
+| `run_motion` | Solve and return body positions / angles per frame and each body's travel range |
 
 **Assemblies and drawings**
 

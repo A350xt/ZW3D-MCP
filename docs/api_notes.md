@@ -265,3 +265,13 @@ ZW3D's own "save changes?" box appears and is handled with `list_dialogs` / `dis
 `export_file` -> `cvxFileExportInit(type, 0, data)` + `cvxFileExport(type, path, data)` for STEP / IGES / Parasolid (text `.x_t`, binary `.x_b`) / STL / OBJ / JT / PDF / DWG / DXF,
 data structs `svx{STEP,IGES,PARA,STL,OBJ,Pdf,DWG,JT}Data` held in one union. STL `FileFormat` = ascii flag; DWG `FileType` 0 = DWG, 1 = DXF(ASCII). After the call the file is
 checked on disk (`EXPORT_FAILED` otherwise) and its size returned. Defaults of each struct come from the Init call. Not yet run in ZW3D (only STEP was verified before).
+
+## rotate_view and kinematics simulation (NOT yet run in ZW3D)
+
+- `rotate_view` -> `cvxViewGet` / `cvxViewSet(svxMatrix Frame, extent)`. The matrix layout is not documented, so it is calibrated at run time against the standard front view
+  (screen X = +x, Y = +z, Z toward the viewer = -y) over four layouts (axes as columns/rows x Z toward/away); `VIEW_CONVENTION` is returned with the matrix if none fits.
+  Absolute: azimuth/elevation (az -90 = front, 0 = right, el 90 = top) or `direction`+`up`; relative: turntable about world Z, tilt about screen X, roll about the view direction.
+- Motion module: `ZwMot*` (`zwapi_motion.h`, NOT included by `VxApi.h`; implemented in `ZW3D_motion_api.lib/.dll`, linked in CMake). The API reads/edits bodies, joints, drivers and
+  solutions (`ZwMotEntityListGet`, `ZwMotBodyGet`, `ZwMotJointGet`, `ZwMotDriverGet/Set/Create`, `ZwMotSolutionGet/Set`, `ZwMotSolutionDriverTimeListGet/Set`), solves the ACTIVE
+  solution (`ZwMotSolutionCalculate`) and returns per-frame body/joint results (`ZwMotSolutionSolveResultGet`). There is no function to create bodies, joints or solutions.
+  Euler angle units are undocumented. `ZwMotBodyMatrixSet` is not wrapped (it may change the model's placement).

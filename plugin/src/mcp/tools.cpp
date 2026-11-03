@@ -27,6 +27,8 @@ const char* const kInstructions = R"GUIDE(Controls a running ZW3D 2025+ (not ZWC
 - Finishing: fillet_edges, chamfer_edges, shell_shape, draft_faces, create_hole (needs a planar face_id from list_faces), pattern_linear, pattern_circular, mirror, sweep, loft.
 - Reshaping: move_shapes (translate / rotate), scale_shapes, create_rib, thicken_faces, trim_shape and split_shape (plane or cutter faces), extend_face. Cleanup: delete_shapes, delete_features, suppress_features, rename_feature. Look: set_color (face ids), screenshot with view / display_mode, set_view. Measure: measure_distance (0 = touching / interfering).
 - Pop-ups: if a call fails with DIALOG_OPEN (or times out), ZW3D shows a dialog. list_dialogs reads its title, text and buttons; dismiss_dialog presses a button (accept / cancel / a named button). Read the question first - do not blindly accept delete/overwrite prompts - then re-check the model with list_shapes.
+- Views: rotate_view for any angle (azimuth / elevation / roll, absolute or relative) followed by screenshot with zoom_all=false; set_view only has the 7 standard views.
+- Kinematics: the mechanism (bodies, joints, solution) must already exist in ZW3D's motion environment; then motion_info -> set_motion_driver (drive a joint) -> set_motion_solution -> run_motion for positions per frame. The API cannot create bodies or joints.
 - Existing files: open_file for .Z3PRT/.Z3/.Z3ASM, import_file for STEP / Parasolid / SAT / IGES / STL, then list_shapes and modify.
 - Assemblies: new_assembly, insert_component, list_components, add_constraint (lock needs only component ids; face constraints use pick paths from list_component_faces, experimental). Drawings: new_drawing, list_drawing_views, auto_dimension, add_bom (experimental).
 - Springs and threads: create_hole with a `thread` object for tapped holes; helical_sweep (tooth/wire profile + axis + turns + pitch; combine=remove/add on a body for real threads); add_thread for a cosmetic thread on a hole/shaft face.
@@ -946,6 +948,92 @@ void build() {
         if (has(a, "display_mode")) p["display_mode"] = enum_of(a, "display_mode", {"shaded", "shaded_edges", "wireframe", "hidden"});
         if (!has(a, "view") && !has(a, "display_mode")) bad("give view and/or display_mode");
         return call("set_view", p);
+      });
+
+  add("rotate_view",
+      "Turn the 3D view to ANY angle (set_view only has the 7 standard ones). absolute mode (default): azimuth / elevation in degrees give the camera direction around the "
+      "model - azimuth -90 = front, 0 = right side, 90 = back, 180 = left, elevation 0 = level, 90 = from above, -90 = from below; the default (azimuth -45, elevation 35.264) is the "
+      "isometric view; roll turns the picture. direction=[x,y,z] (from the model towards the camera) with optional up=[x,y,z] sets the view by vector instead. relative mode: "
+      "azimuth / elevation / roll are increments applied to the CURRENT view (orbit left/right/up/down). Then call screenshot with zoom_all=false to keep the angle.",
+      schema({{"mode", t_enum({"absolute", "relative"}, "absolute")}, {"azimuth", t_num("degrees")}, {"elevation", t_num("degrees")}, {"roll", t_num("degrees")},
+              {"direction", t_pt("Camera direction, from the model towards the camera.")}, {"up", t_pt("Screen-up hint for direction, default [0,0,1].")}, {"zoom_all", t_bool()}}),
+      [](const json& a) {
+        json p = {{"mode", has(a, "mode") ? enum_of(a, "mode", {"absolute", "relative"}) : std::string("absolute")}, {"zoom_all", bool_or(a, "zoom_all", true)}};
+        for (const char* k : {"azimuth", "elevation", "roll"})
+          if (has(a, k)) p[k] = val::number(arg(a, k), k);
+        if (has(a, "direction")) p["direction"] = val::to_json(val::vector(arg(a, "direction"), "direction"));
+        if (has(a, "up")) p["up"] = val::to_json(val::vector(arg(a, "up"), "up"));
+        return call("rotate_view", p);
+      });
+
+  add("motion_info",
+      "Kinematics simulation (ZW3D motion module): list the motion setup of the active assembly - bodies (id, fixed, centre), joints (kind, bodies, limits), drivers "
+      "(joint, type, function, parameters), solutions (frames, end time, degrees of freedom, driver times) and the active solution. Bodies, joints and solutions cannot be created "
+      "through the API: set them up in ZW3D's motion environment first (the assembly must be active in that environment); drivers can be created with set_motion_driver.",
+      schema({}), [](const json&) { return call("motion_info"); });
+
+  add("set_motion_driver",
+      "Create (give joint_id) or edit (give driver_id) a motion driver. type: angle / angular_velocity / angular_acceleration for revolute joints, displacement / velocity / "
+      "acceleration for sliders. function: constant, linear, cosine, cycloidal, parabolic, polynomial or user (needs expression). parameters = [A,B,C,D,L,T] of the function "
+      "(e.g. linear: A = rate of change); initial_position / initial_velocity; active toggles it; start_time / end_time (seconds) set when it runs inside solution_id "
+      "(default: the active solution). Returns the driver.",
+      schema({{"driver_id", t_int()}, {"joint_id", t_int()},
+              {"type", t_enum({"displacement", "velocity", "acceleration", "angle", "angular_velocity", "angular_acceleration"})},
+              {"function", t_enum({"constant", "linear", "cosine", "cycloidal", "parabolic", "polynomial", "user"})},
+              {"parameters", t_arr(t_num(), "Up to 6 numbers A,B,C,D,L,T", -1, 6)}, {"expression", t_str("function=user: expression of the time t")},
+              {"initial_position", t_num()}, {"initial_velocity", t_num()}, {"active", t_bool()}, {"start_time", t_num()}, {"end_time", t_num()}, {"solution_id", t_int()}}),
+      [](const json& a) {
+        if (!has(a, "driver_id") && !has(a, "joint_id")) bad("give driver_id to edit a driver or joint_id to create one");
+        json p = json::object();
+        for (const char* k : {"driver_id", "joint_id", "solution_id"})
+          if (has(a, k)) p[k] = val::one_id(arg(a, k), k);
+        if (has(a, "type")) p["type"] = enum_of(a, "type", {"displacement", "velocity", "acceleration", "angle", "angular_velocity", "angular_acceleration"});
+        if (has(a, "function")) p["function"] = enum_of(a, "function", {"constant", "linear", "cosine", "cycloidal", "parabolic", "polynomial", "user"});
+        if (has(a, "parameters")) {
+          const json& pa = arg(a, "parameters");
+          if (!pa.is_array() || pa.size() > 6) bad("parameters must be up to 6 numbers [A,B,C,D,L,T]");
+          json v = json::array();
+          for (const auto& x : pa) v.push_back(val::number(x, "parameters[i]"));
+          p["parameters"] = v;
+        }
+        if (has(a, "expression")) p["expression"] = str_req(a, "expression");
+        for (const char* k : {"initial_position", "initial_velocity", "start_time", "end_time"})
+          if (has(a, k)) p[k] = val::number(arg(a, k), k);
+        if (has(a, "active")) p["active"] = bool_or(a, "active", true);
+        return call("set_motion_driver", p);
+      });
+
+  add("set_motion_solution",
+      "Edit a motion solution (default: the active one): type kinematics / location, end_time (s), total_frames, frame_frequency (frames per second). Give two of end_time / "
+      "frame_frequency / total_frames; activate=true makes it the active solution. Returns the solution.",
+      schema({{"solution_id", t_int()}, {"type", t_enum({"kinematics", "location"})}, {"end_time", t_num()}, {"total_frames", t_int()}, {"frame_frequency", t_int()},
+              {"activate", t_bool()}}),
+      [](const json& a) {
+        json p = json::object();
+        if (has(a, "solution_id")) p["solution_id"] = val::one_id(arg(a, "solution_id"), "solution_id");
+        if (has(a, "type")) p["type"] = enum_of(a, "type", {"kinematics", "location"});
+        if (has(a, "end_time")) p["end_time"] = val::positive(arg(a, "end_time"), "end_time");
+        if (has(a, "total_frames")) p["total_frames"] = val::one_id(arg(a, "total_frames"), "total_frames");
+        if (has(a, "frame_frequency")) p["frame_frequency"] = val::one_id(arg(a, "frame_frequency"), "frame_frequency");
+        if (has(a, "activate")) p["activate"] = bool_or(a, "activate", false);
+        return call("set_motion_solution", p);
+      });
+
+  add("run_motion",
+      "Solve the motion solution (default: the active one) and return the kinematics: status, number of frames, the position / Euler angles / velocities of every body at up to "
+      "max_frames evenly spaced frames (default 12, first and last included), and the min / max position range of each body over the whole run. body_ids limits the bodies. "
+      "Fails with MOTION_SOLVE_FAILED if the mechanism is under- or over-constrained (check degrees_of_freedom in motion_info).",
+      schema({{"solution_id", t_int()}, {"max_frames", t_int("Frames to return, 2-200")}, {"body_ids", t_ids()}}),
+      [](const json& a) {
+        json p = json::object();
+        if (has(a, "solution_id")) p["solution_id"] = val::one_id(arg(a, "solution_id"), "solution_id");
+        if (has(a, "max_frames")) {
+          int n = int_or(a, "max_frames", 12);
+          if (n < 2 || n > 200) bad("max_frames must be between 2 and 200");
+          p["max_frames"] = n;
+        }
+        if (has(a, "body_ids")) p["body_ids"] = val::id_list(arg(a, "body_ids"), "body_ids");
+        return call("run_motion", p, 180000);
       });
 
   add("open_file",
